@@ -456,15 +456,15 @@ change_port() {
 
 show_menu() {
     clear
-  
+
     if is_running; then
         load_config
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
         echo -e "${BOLD}${BLUE}║${NC}      ${GREEN}Proto Server Manager${NC}      ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                                        ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}                          ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} Port: ${GREEN}${PORT}${NC}                                       ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}               ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                      ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC} Port: ${GREEN}${PORT}${NC}                         ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
     else
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
