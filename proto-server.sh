@@ -425,8 +425,7 @@ show_menu() {
     echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}03${CYAN}]${NC} ${GREEN}•${RED} Restart Server          ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}04${CYAN}]${NC} ${GREEN}•${RED} Server Status           ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}05${CYAN}]${NC} ${GREEN}•${RED} View Logs               ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}06${CYAN}]${NC} ${GREEN}•${RED} Change Port             ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}07${CYAN}]${NC} ${GREEN}•${RED} Change Token            ${BOLD}${BLUE}║${NC}"
+    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}06${CYAN}]${NC} ${GREEN}•${RED} Change Token            ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}00${CYAN}]${NC} ${RED}•${RED} Exit                    ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}╚════════════════════════════════╝${NC}"
     echo ""
@@ -459,7 +458,7 @@ main() {
             5|05)
                 view_logs
                 ;;
-            7|07)
+            6|06)
                 change_token
                 ;;
             0|00)
