@@ -11,7 +11,6 @@ MAGENTA='\033[1;35m'
 NC='\033[0m'
 BOLD='\033[1m'
 
-
 BINARY_NAME="proto-server"
 CONFIG_DIR="/etc/proto-server"
 DATA_DIR="/var/lib/proto-server"
@@ -403,10 +402,10 @@ change_token() {
 show_menu() {
     clear
 
-    if is_running; then
+    if true; then
         load_config
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
-        echo -e "${BOLD}${BLUE}║${NC}      ${GREEN}DT Proto Server Manager${NC}      ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC}    ${GREEN}DT Proto Server Manager${NC}     ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}               ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                      ${BOLD}${BLUE}║${NC}"
