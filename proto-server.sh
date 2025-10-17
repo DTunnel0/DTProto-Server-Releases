@@ -163,12 +163,13 @@ create_service() {
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=Proto Server
-After=network.target
+After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
+Group=root
 WorkingDirectory=/var/lib/proto-server
 ExecStart=/usr/local/bin/$BINARY_NAME \\
     --token $token \\
@@ -187,12 +188,6 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=proto-server
-
-NoNewPrivileges=false
-PrivateTmp=true
-
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -460,6 +455,8 @@ change_port() {
 }
 
 show_menu() {
+    clear
+  
     if is_running; then
         load_config
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
@@ -495,7 +492,6 @@ main() {
     check_binary
     init_dirs
     ensure_token
-    clear
     
     while true; do
         show_menu
