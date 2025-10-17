@@ -400,60 +400,6 @@ change_token() {
     read -p "Press Enter to continue..."
 }
 
-change_port() {
-    echo ""
-    
-    load_config
-    
-    if [ -z "$PORT" ]; then
-        print_warning "Server not configured yet. Use 'Start Server' first."
-        read -p "Press Enter to continue..."
-        return
-    fi
-    
-    echo "Current port: $PORT"
-    echo ""
-    
-    if is_running; then
-        print_warning "Server is running! It will be restarted with the new port."
-        echo ""
-    fi
-    
-    read -p "Enter new port: " new_port
-    
-    if [ -z "$new_port" ] || ! [[ "$new_port" =~ ^[0-9]+$ ]]; then
-        print_error "Invalid port number!"
-        read -p "Press Enter to continue..."
-        return
-    fi
-    
-    PORT="$new_port"
-    save_config
-    
-    print_success "Port updated to $PORT"
-    
-    if is_running; then
-        echo ""
-        print_info "Recreating service..."
-        local token=$(load_token)
-        create_service "$token"
-        
-        print_info "Restarting server..."
-        systemctl restart "$SERVICE_NAME"
-        
-        sleep 2
-        
-        if is_running; then
-            print_success "Server restarted on new port!"
-        else
-            print_error "Failed to restart server"
-        fi
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
-}
-
 show_menu() {
     clear
 
@@ -464,7 +410,7 @@ show_menu() {
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}               ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                      ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} Port: ${GREEN}${PORT}${NC}                         ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC} Port: ${GREEN}${PORT:-8080}${NC}                     ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
     else
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
@@ -512,9 +458,6 @@ main() {
                 ;;
             5|05)
                 view_logs
-                ;;
-            6|06)
-                change_port
                 ;;
             7|07)
                 change_token
