@@ -406,7 +406,7 @@ show_menu() {
     if is_running; then
         load_config
         echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
-        echo -e "${BOLD}${BLUE}║${NC}      ${GREEN}Proto Server Manager${NC}      ${BOLD}${BLUE}║${NC}"
+        echo -e "${BOLD}${BLUE}║${NC}      ${GREEN}DT Proto Server Manager${NC}      ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}               ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                      ${BOLD}${BLUE}║${NC}"
@@ -419,13 +419,17 @@ show_menu() {
         echo -e "${BOLD}${BLUE}║${NC} ${RED}Status: Server is not running${NC}  ${BOLD}${BLUE}║${NC}"
         echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
     fi
-    
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}01${CYAN}]${NC} ${GREEN}•${RED} Start Server            ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}02${CYAN}]${NC} ${GREEN}•${RED} Stop Server             ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}03${CYAN}]${NC} ${GREEN}•${RED} Restart Server          ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}04${CYAN}]${NC} ${GREEN}•${RED} Server Status           ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}05${CYAN}]${NC} ${GREEN}•${RED} View Logs               ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}06${CYAN}]${NC} ${GREEN}•${RED} Change Token            ${BOLD}${BLUE}║${NC}"
+
+    if ! is_running; then
+        echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}01${CYAN}]${NC} ${GREEN}•${RED} Start Server            ${BOLD}${BLUE}║${NC}"
+    else
+        echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}01${CYAN}]${NC} ${GREEN}•${RED} Stop Server             ${BOLD}${BLUE}║${NC}"
+    fi
+
+    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}02${CYAN}]${NC} ${GREEN}•${RED} Restart Server          ${BOLD}${BLUE}║${NC}"
+    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}03${CYAN}]${NC} ${GREEN}•${RED} Server Status           ${BOLD}${BLUE}║${NC}"
+    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}04${CYAN}]${NC} ${GREEN}•${RED} View Logs               ${BOLD}${BLUE}║${NC}"
+    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}05${CYAN}]${NC} ${GREEN}•${RED} Change Token            ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}00${CYAN}]${NC} ${RED}•${RED} Exit                    ${BOLD}${BLUE}║${NC}"
     echo -e "${BOLD}${BLUE}╚════════════════════════════════╝${NC}"
     echo ""
@@ -444,21 +448,18 @@ main() {
 
         case $option in
             1|01)
-                start_server
+                is_running && stop_server || start_server
                 ;;
             2|02)
-                stop_server
-                ;;
-            3|03)
                 restart_server
                 ;;
-            4|04)
+            3|03)
                 show_status
                 ;;
-            5|05)
+            4|04)
                 view_logs
                 ;;
-            6|06)
+            5|05)
                 change_token
                 ;;
             0|00)
