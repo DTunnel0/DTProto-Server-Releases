@@ -13,7 +13,7 @@ Este repositório distribui:
 
 - Distribuição Linux com `systemd` (testado em Ubuntu/Debian/CentOS).
 - Acesso root (`sudo`) para instalar binários e serviços.
-- Ferramentas padrão: `curl`, `tar`, `openssl`.
+- Ferramentas padrão: `curl`, `openssl`.
 - Token de autenticação válido fornecido pela equipe DTunnel.
 
 ## 🚀 Instalação Rápida
