@@ -116,17 +116,25 @@ print_main_menu() {
 
 print_initial_menu() {
     echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BLUE}║${WHITE}                     MENU INICIAL                             ${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}                        MENU INICIAL                          ${BLUE}║${RESET}"
     echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
     
     local menu_items=(
         "1 • Menu Principal do Protocolo"
         "2 • Menu de Conexão"
+        "3 • Remover Script"
+        "0 • Sair"
     )
     
     for item in "${menu_items[@]}"; do
         local padding=$((60 - ${#item}))
-        printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        if [[ $item == *"Remover"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        elif [[ $item == *"Sair"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        else
+            printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        fi
     done
     
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
@@ -1109,6 +1117,78 @@ protocol_main_menu() {
     done
 }
 
+remove_completely() {
+    print_header
+    
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}║${WHITE}                   ⚠️  REMOÇÃO COMPLETA ⚠️                    ${RED}║${RESET}"
+    echo -e "${RED}║${WHITE}        Esta ação irá remover TODOS os dados e serviços       ${RED}║${RESET}"
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+    echo -e "${YELLOW}Itens que serão removidos:${RESET}"
+    echo -e "${WHITE}  • Serviço DTProto Server${RESET}"
+    echo -e "${WHITE}  • Todos os serviços Proxy ativos${RESET}"
+    echo -e "${WHITE}  • Binários do sistema${RESET}"
+    echo -e "${WHITE}  • Arquivos de configuração${RESET}"
+    echo -e "${WHITE}  • Arquivos de dados e logs${RESET}"
+    echo -e "${WHITE}  • Script de gerenciamento${RESET}"
+    echo
+    
+    if ! confirm_action "${RED}TEM CERTEZA que deseja remover completamente?${RESET}" "n"; then
+        print_info "Remoção cancelada."
+        pause
+        return
+    fi
+    
+    print_info "Iniciando remoção completa..."
+    
+    if is_server_active; then
+        print_info "Parando serviço $SERVICE_NAME..."
+        sudo systemctl stop "$SERVICE_NAME"
+        sudo systemctl disable "$SERVICE_NAME" 2>/dev/null
+    fi
+    
+    print_info "Parando todos os serviços proxy..."
+    for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
+        if systemctl is-active --quiet "$service"; then
+            sudo systemctl stop "$service"
+        fi
+        sudo systemctl disable "$service" 2>/dev/null
+        sudo rm -f "/etc/systemd/system/$service.service"
+    done
+    
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed
+    
+    print_info "Removendo arquivos de serviço..."
+    sudo rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    
+    print_info "Removendo binários..."
+    sudo rm -f "$PROTO_SERVER_BIN"
+    sudo rm -f "$PROXY_EXECUTABLE"
+    sudo rm -f "$PROTO_MANAGER_SCRIPT"
+    
+    print_info "Removendo configurações e dados..."
+    sudo rm -rf "$(dirname "$TOKEN_FILE")"
+    sudo rm -rf "$(dirname "$CONFIG_FILE")"
+    sudo rm -rf "$DATA_DIR"
+    sudo rm -rf "$PROXY_DIR"
+    sudo rm -rf "$PROXY_LOG_DIR"
+    
+    if [[ -f "/usr/local/bin/proto" ]]; then
+        sudo rm -f "/usr/local/bin/proto"
+    fi
+    
+    print_success "Remoção completa concluída!"
+    echo
+    echo -e "${GREEN}Todos os serviços e arquivos foram removidos com sucesso.${RESET}"
+    echo -e "${YELLOW}O sistema está limpo.${RESET}"
+    echo
+    
+    pause
+    exit 0
+}
+
 initial_menu() {
     while true; do
         print_header
@@ -1116,11 +1196,16 @@ initial_menu() {
         print_initial_menu
         
         local option
-        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-2]:${RESET} ")" option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-3]:${RESET} ")" option
         
         case "$option" in
             1) protocol_main_menu ;;
             2) connection_menu ;;
+            3) remove_completely ;;
+            0) 
+                print_info "Saindo..."
+                exit 0 
+                ;;
             *) 
                 print_error "Opção inválida: $option"
                 pause 
