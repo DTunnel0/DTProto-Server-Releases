@@ -160,19 +160,6 @@ pause() {
     read -r
 }
 
-init_certificate_proto() {
-    if [[ ! -f "$CERTIFICATE_SSL_FILE" ]] || [[ ! -f "$PRIVATE_KEY_SSL_FILE" ]]; then
-        print_info "Generating TLS certificates..."
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$PRIVATE_KEY_SSL_FILE" \
-            -out "$CERTIFICATE_SSL_FILE" \
-            -subj "/C=BR/ST=State/L=City/O=ProtoServer/CN=proto-server" \
-            2>/dev/null
-        chmod 600 "$PRIVATE_KEY_SSL_FILE"
-        chmod 644 "$CERTIFICATE_SSL_FILE"
-    fi
-}
-
 init_proxy_dirs() {
     sudo mkdir -p "$PROXY_DIR" "$PROXY_CONFIG_DIR" "$PROXY_LOG_DIR"
 }
@@ -653,10 +640,20 @@ is_server_active() {
 }
 
 ensure_data_structure() {
-    
     if [ ! -d "$DATA_DIR" ]; then
         sudo mkdir -p "$DATA_DIR"
         print_success "Diretório de dados criado: $DATA_DIR"
+    fi
+
+    if [[ ! -f "$CERTIFICATE_SSL_FILE" ]] || [[ ! -f "$PRIVATE_KEY_SSL_FILE" ]]; then
+        print_info "Generating TLS certificates..."
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout "$PRIVATE_KEY_SSL_FILE" \
+            -out "$CERTIFICATE_SSL_FILE" \
+            -subj "/C=BR/ST=State/L=City/O=ProtoServer/CN=proto-server" \
+            2>/dev/null
+        chmod 600 "$PRIVATE_KEY_SSL_FILE"
+        chmod 644 "$CERTIFICATE_SSL_FILE"
     fi
 
     if [ ! -f "$CREDENTIALS_FILE" ]; then
@@ -1129,8 +1126,6 @@ if [ "$EUID" -ne 0 ]; then
     echo -e "${YELLOW}Execute com: ${WHITE}sudo $0${RESET}"
     exit 1
 fi
-
-init_certificate_proto
 
 check_token_on_startup
 
