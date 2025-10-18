@@ -1,477 +1,1112 @@
 #!/bin/bash
 
-set -e
+PROTO_SERVER_BIN="/usr/local/bin/proto-server"
+PROTO_MANAGER_SCRIPT="/usr/local/bin/proto"
+TOKEN_FILE="/etc/proto-server/token"
+CONFIG_FILE="/etc/proto-server/config.conf"
+DATA_DIR="/var/lib/proto-server"
+CREDENTIALS_FILE="$DATA_DIR/credentials.json"
+SERVICE_NAME="proto-server"
+
+PROXY_DIR="/etc/proxy"
+PROXY_TOKEN_FILE="$PROXY_DIR/token"
+PROXY_CONFIG_DIR="$PROXY_DIR/conf.d"
+PROXY_LOG_DIR="/var/log/proxy"
+PROXY_SERVICE_PREFIX="proxy"
+PROXY_EXECUTABLE="/usr/local/bin/proxy-server"
+
+DEFAULT_BUFFER_SIZE=32768
+DEFAULT_HTTP_RESPONSE="DTunnel"
+MIN_PORT=1
+MAX_PORT=65535
 
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[1;34m'
+PURPLE='\033[1;35m'
 CYAN='\033[1;36m'
-MAGENTA='\033[1;35m'
-NC='\033[0m'
+WHITE='\033[1;37m'
+GRAY='\033[1;90m'
+BG_BLUE='\033[44m'
+BG_GREEN='\033[42m'
+BG_RED='\033[41m'
+BG_GRAY='\033[100m'
+RESET='\033[0m'
 BOLD='\033[1m'
 
-BINARY_NAME="proto-server"
-CONFIG_DIR="/etc/proto-server"
-DATA_DIR="/var/lib/proto-server"
-TOKEN_FILE="$CONFIG_DIR/token"
-CONFIG_FILE="$CONFIG_DIR/config.conf"
-SERVICE_NAME="proto-server"
+print_header() {
+    clear
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${BG_BLUE}${WHITE}                    DTProto SERVER MANAGER                    ${RESET}${BLUE}║"
+    echo -e "${BLUE}║${WHITE}             Next-Generation VPN Management System            ${BLUE}║"
+    echo -e "${BLUE}║${GRAY}              Author: Glemison C. DuTra (@DuTra01)            ${BLUE}║"
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+}
 
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+print_status() {
+    local status_text="ONLINE"
+    local status_bg=$BG_GREEN
+    local status_color=$WHITE
+    
+    if ! is_server_active; then
+        status_text="OFFLINE"
+        status_bg=$BG_RED
+        status_color=$WHITE
+    fi
+    
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    
+    if [ "$status_text" = "ONLINE" ]; then
+        local padded_status="ONLINE "
+    else
+        local padded_status="OFFLINE"
+    fi
+    
+    printf "${BLUE}║${WHITE} STATUS: ${status_bg}${BOLD}${status_color}  ${padded_status}  ${RESET}${BLUE}                                          ║${RESET}\n"
+    
+    local port=$(get_config_value "PORT")
+    local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
+    local tun=$(get_config_value "TUN_INTERFACE")
+    
+    port=${port:-5000}
+    subnet=${subnet:-10.10.0.0/16}
+    tun=${tun:-tun0}
+    
+    local line="${WHITE} Porta: ${CYAN}$(printf '%-7s' "$port")${WHITE} | Sub-rede: ${CYAN}$(printf '%-15s' "$subnet")${WHITE} | TUN: ${CYAN}$(printf '%-8s' "$tun")"
+    
+    printf "${BLUE}║${line}%3s${BLUE}║${RESET}\n" ""
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+}
+
+print_main_menu() {
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${WHITE}                        MENU PRINCIPAL                        ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local menu_items=(
+        "1 • Iniciar Servidor"
+        "2 • Parar Servidor" 
+        "3 • Reiniciar Servidor"
+        "4 • Status & Configuração"
+        "5 • Visualizar Logs"
+        "6 • Alterar Porta"
+        "7 • Gerenciar Token"
+        "0 • Voltar ao Menu Inicial"
+    )
+    
+    for item in "${menu_items[@]}"; do
+        local padding=$((60 - ${#item}))
+        if [[ $item == *"Voltar"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        else
+            printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        fi
+    done
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+}
+
+print_initial_menu() {
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${WHITE}                     MENU INICIAL                             ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local menu_items=(
+        "1 • Menu Principal do Protocolo"
+        "2 • Menu de Conexão"
+    )
+    
+    for item in "${menu_items[@]}"; do
+        local padding=$((60 - ${#item}))
+        printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+    done
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
 }
 
 print_success() {
-    echo -e "${GREEN}[✓]${NC} $1"
+    echo -e "${GREEN}$1${RESET}"
 }
 
 print_error() {
-    echo -e "${RED}[✗]${NC} $1"
+    echo -e "${RED}$1${RESET}"
+}
+
+print_info() {
+    echo -e "${CYAN}$1${RESET}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
+    echo -e "${YELLOW}$1${RESET}"
 }
 
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        print_error "This script must be run as root (use sudo)"
-        exit 1
-    fi
+prompt_input() {
+    echo -e "${BLUE}$1${RESET}"
+    read -rp "> " response
+    echo "$response"
 }
 
-check_binary() {
-    if ! command -v "$BINARY_NAME" &> /dev/null; then
-        print_error "Proto Server binary not found!"
-        echo ""
-        echo "Install it with:"
-        echo "  curl -fsSL https://github.com/DTunnel0/DTProto-Server-Releases/releases/latest/download/install-server.sh | sudo bash"
-        echo ""
-        exit 1
-    fi
+pause() {
+    echo
+    print_warning "Pressione Enter para continuar..."
+    read -r
 }
 
-init_dirs() {
-    mkdir -p "$CONFIG_DIR"
-    mkdir -p "$DATA_DIR"
+init_proxy_dirs() {
+    sudo mkdir -p "$PROXY_DIR" "$PROXY_CONFIG_DIR" "$PROXY_LOG_DIR"
 }
 
-validate_and_save_token() {
-    local token=$1
-    
-    print_info "Validating token..."
-    
-    if "$BINARY_NAME" --token "$token" --validate 2>/dev/null; then
-        echo "$token" > "$TOKEN_FILE"
-        chmod 600 "$TOKEN_FILE"
-        print_success "Token validated and saved!"
-        return 0
+load_proxy_token() {
+    if [[ -f "$PROXY_TOKEN_FILE" ]]; then
+        cat "$PROXY_TOKEN_FILE"
     else
-        print_error "Invalid token!"
+        echo ""
+    fi
+}
+
+save_proxy_token() {
+    local token="$1"
+    sudo mkdir -p "$PROXY_DIR"
+    echo "$token" | sudo tee "$PROXY_TOKEN_FILE" > /dev/null
+}
+
+save_unified_token() {
+    local token="$1"
+    
+    sudo mkdir -p "$(dirname "$TOKEN_FILE")"
+    echo "$token" | sudo tee "$TOKEN_FILE" > /dev/null
+    
+    sudo mkdir -p "$PROXY_DIR"
+    echo "$token" | sudo tee "$PROXY_TOKEN_FILE" > /dev/null
+    
+    print_success "Token salvo!"
+}
+
+prompt_for_token_if_missing() {
+    local current_token=$(load_token)
+    
+    if [[ -z "$current_token" ]]; then
+        echo
+        print_warning "Token de autenticação não encontrado!"
+        echo -e "${BLUE}Por favor, insira seu token:${RESET}"
+        read -rp "> " new_token
+        
+        if [[ -n "$new_token" ]]; then
+            save_unified_token "$new_token"
+            print_success "Token configurado!"
+        else
+            print_error "Token não pode ser vazio."
+            exit 1
+        fi
+        echo
+    fi
+}
+
+list_active_proxies() {
+    local active_ports=""
+    
+    for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
+        if systemctl is-active --quiet "$service"; then
+            local port=$(echo "$service" | sed "s/${PROXY_SERVICE_PREFIX}-//" | sed 's/\.service$//')
+            if [[ -n "$active_ports" ]]; then
+                active_ports="$active_ports, $port"
+            else
+                active_ports="$port"
+            fi
+        fi
+    done
+    
+    echo "$active_ports"
+}
+
+get_proxy_config_file() {
+    local port="$1"
+    echo "$PROXY_CONFIG_DIR/proxy-$port.conf"
+}
+
+get_proxy_log_file() {
+    local port="$1"
+    echo "$PROXY_LOG_DIR/proxy-$port.log"
+}
+
+get_proxy_service_name() {
+    local port="$1"
+    echo "$PROXY_SERVICE_PREFIX-$port"
+}
+
+validate_port() {
+    local port="$1"
+    
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        print_error "Porta deve ser um número!"
         return 1
     fi
-}
-
-load_token() {
-    if [ -f "$TOKEN_FILE" ]; then
-        cat "$TOKEN_FILE"
-    fi
-}
-
-ensure_token() {
-    local token=$(load_token)
     
-    if [ -z "$token" ]; then
-        print_warning "No token configured!"
-        
-        while true; do
-            read -p "Enter your authentication token: " token
-            
-            if [ -z "$token" ]; then
-                print_error "Token cannot be empty!"
-                continue
-            fi
-            
-            if validate_and_save_token "$token"; then
-                echo ""
-                read -p "Press Enter to continue..."
-                break
-            else
-                echo ""
-                read -p "Try again? (Y/n): " retry
-                if [[ "$retry" =~ ^[Nn]$ ]]; then
-                    exit 1
-                fi
-            fi
-        done
+    if [[ "$port" -lt 1 || "$port" -gt 65535 ]]; then
+        print_error "Porta deve estar entre 1 e 65535!"
+        return 1
     fi
+    
+    return 0
 }
 
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        source "$CONFIG_FILE"
+check_port_available() {
+    local port="$1"
+    
+    if ss -tuln | grep -q ":$port "; then
+        print_error "Porta $port já está em uso!"
+        return 1
+    fi
+    
+    return 0
+}
+
+confirm_action() {
+    local message="$1"
+    local default_answer="${2:-n}"
+    echo -e "${YELLOW}$message (s/N)${RESET}"
+    read -rp "> " response
+    response=${response:-$default_answer}
+    case "${response,,}" in
+        s|sim|y|yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+get_ssh_port() {
+    local ssh_port=$(get_config_value "PORT")
+    echo "${ssh_port:-5000}"
+}
+
+build_proxy_command() {
+    local port="$1"
+    local token="$2"
+    local ssl_enabled="$3"
+    local ssl_cert_path="$4"
+    local ssh_only_flag="$5"
+    local http_response="$6"
+    
+    local command="$PROXY_EXECUTABLE --token=$token --buffer-size=$DEFAULT_BUFFER_SIZE --response=$http_response --domain --log-file=$(get_proxy_log_file "$port")"
+    
+    local ssh_port=$(get_ssh_port)
+    command="$command --ssh-port=$ssh_port"
+    
+    if [[ "$ssl_enabled" == "true" ]]; then
+        command="$command --port=$port:ssl"
+        if [[ -n "$ssl_cert_path" ]]; then
+            command="$command --cert=$ssl_cert_path"
+        fi
     else
-        PORT=""
-        SUBNET="10.10.0.0/16"
-        TUN="tun0"
+        command="$command --port=$port"
     fi
+    
+    if [[ "$ssh_only_flag" == "true" ]]; then
+        command="$command --ssh-only"
+    fi
+    
+    echo "$command"
 }
 
-save_config() {
-    cat > "$CONFIG_FILE" <<EOF
-PORT=$PORT
-SUBNET=$SUBNET
-TUN=$TUN
-EOF
-    chmod 600 "$CONFIG_FILE"
-}
-
-is_running() {
-    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
-}
-
-create_service() {
-    local token=$1
-    local auth_file="$DATA_DIR/credentials.json"
-    local stats_file="$DATA_DIR/stats.json"
-    local cert_file="$CONFIG_DIR/cert.pem"
-    local key_file="$CONFIG_DIR/key.pem"
+start_proxy_service() {
+    print_header
     
-    if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        print_info "Generating TLS certificates..."
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$key_file" \
-            -out "$cert_file" \
-            -subj "/C=BR/ST=State/L=City/O=ProtoServer/CN=proto-server" \
-            2>/dev/null
-        chmod 600 "$key_file"
-        chmod 644 "$cert_file"
+    local port
+    echo -e "${BLUE}Digite a porta para abrir:${RESET}"
+    read -rp "> " port
+    
+    port=$(echo "$port" | tr -d '[:space:]')
+    
+    if ! validate_port "$port"; then
+        pause
+        return
     fi
     
-    if [ ! -f "$auth_file" ]; then
-        echo '{"credentials":[]}' > "$auth_file"
-        chmod 600 "$auth_file"
+    if ! check_port_available "$port"; then
+        pause
+        return
     fi
     
-    if [ ! -f "$stats_file" ]; then
-        echo '{}' > "$stats_file"
-        chmod 644 "$stats_file"
+    local token=$(load_token)
+    if [[ -z "$token" ]]; then
+        print_error "Token não configurado. Configure o token primeiro."
+        pause
+        return
     fi
     
-    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+    local ssl_enabled="false"
+    local ssl_cert_path=""
+    
+    if confirm_action "Deseja habilitar SSL?" "n"; then
+        ssl_enabled="true"
+        if ! confirm_action "Usar certificado interno?" "s"; then
+            echo -e "${BLUE}Caminho do certificado SSL:${RESET}"
+            read -rp "> " ssl_cert_path
+        fi
+    fi
+    
+    local http_response
+    echo -e "${BLUE}Resposta HTTP padrão (Enter para '$DEFAULT_HTTP_RESPONSE'):${RESET}"
+    read -rp "> " http_response
+    http_response=${http_response:-$DEFAULT_HTTP_RESPONSE}
+    
+    local ssh_only_flag="false"
+    if confirm_action "Habilitar modo somente SSH?" "n"; then
+        ssh_only_flag="true"
+    fi
+    
+    print_info "Iniciando proxy na porta $port..."
+    
+    local proxy_command=$(build_proxy_command "$port" "$token" "$ssl_enabled" "$ssl_cert_path" "$ssh_only_flag" "$http_response")
+    
+    local service_name=$(get_proxy_service_name "$port")
+    
+    sudo tee "/etc/systemd/system/$service_name.service" > /dev/null <<EOF
 [Unit]
-Description=Proto Server
-After=network.target network-online.target
-Wants=network-online.target
+Description=DTunnel Proxy Server na porta $port
+After=network.target
 
 [Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/var/lib/proto-server
-ExecStart=/usr/local/bin/$BINARY_NAME \\
-    --token $token \\
-    --listen-addr :$PORT \\
-    --virtual-subnet-cidr $SUBNET \\
-    --tun $TUN \\
-    --auth-file $auth_file \\
-    --stats-file $stats_file \\
-    --tls-cert-file $cert_file \\
-    --tls-key-file $key_file \\
-    --tun-buffer-size 16384 \\
-    --client-cleanup-interval 60 \\
-    --client-inactive-timeout 120
+ExecStart=$proxy_command
 Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=proto-server
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+    sudo systemctl daemon-reload
     
-    systemctl daemon-reload
+    if sudo systemctl start "$service_name"; then
+        sudo systemctl enable "$service_name" > /dev/null 2>&1
+        print_success "Proxy iniciado com sucesso na porta $port!"
+    else
+        print_error "Falha ao iniciar proxy na porta $port"
+    fi
+    
+    pause
 }
 
-start_server() {    
-    if is_running; then
-        print_warning "Server is already running!"
-        echo ""
-        load_config
-        echo "Current configuration:"
-        echo "  Port: $PORT"
-        echo "  TUN Interface: $TUN"
-        echo "  Virtual Subnet: $SUBNET"
-        echo ""
-        read -p "Press Enter to continue..."
+stop_proxy_service() {
+    print_header
+    
+    local active_ports=$(list_active_proxies)
+    
+    if [[ -z "$active_ports" ]]; then
+        print_error "Nenhum proxy ativo no momento."
+        pause
         return
     fi
     
-    local token=$(load_token)
-    load_config
+    echo -e "${BLUE}Portas ativas: ${GREEN}$active_ports${RESET}"
+    echo -e "${BLUE}Digite a porta para fechar:${RESET}"
+    read -rp "> " port
     
-    echo "Enter the port to start the server:"
-    if [ -n "$PORT" ]; then
-        read -p "Port [current: $PORT]: " new_port
-        if [ -n "$new_port" ]; then
-            PORT="$new_port"
-        fi
-    else
-        read -p "Port: " PORT
-    fi
+    port=$(echo "$port" | tr -d '[:space:]')
     
-    if [ -z "$PORT" ] || ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
-        print_error "Invalid port number!"
-        read -p "Press Enter to continue..."
+    if ! validate_port "$port"; then
+        pause
         return
     fi
     
-    read -p "Virtual subnet CIDR [current: $SUBNET]: " new_subnet
-    if [ -n "$new_subnet" ]; then
-        SUBNET="$new_subnet"
-    fi
+    local service_name=$(get_proxy_service_name "$port")
     
-    read -p "TUN interface name [current: $TUN]: " new_tun
-    if [ -n "$new_tun" ]; then
-        TUN="$new_tun"
-    fi
-    
-    save_config
-    
-    echo ""
-    print_info "Creating service..."
-    create_service "$token"
-    
-    print_info "Starting server on port $PORT..."
-    systemctl enable "$SERVICE_NAME" 2>/dev/null
-    systemctl start "$SERVICE_NAME"
-    
-    sleep 2
-    
-    if is_running; then
-        print_success "Server started successfully!"
-        echo ""
-        echo "Port: $PORT"
-        echo "TUN Interface: $TUN"
-        echo "Virtual Subnet: $SUBNET"
-    else
-        print_error "Failed to start server"
-        echo "Check logs: journalctl -u $SERVICE_NAME -n 50"
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
-}
-
-stop_server() {
-    if ! is_running; then
-        print_warning "Server is not running!"
-        read -p "Press Enter to continue..."
+    if ! systemctl is-active --quiet "$service_name"; then
+        print_error "Proxy na porta $port não está ativo."
+        pause
         return
     fi
     
-    print_info "Stopping server..."
-    systemctl stop "$SERVICE_NAME"
+    print_info "Parando proxy na porta $port..."
     
-    sleep 2
-    
-    if ! is_running; then
-        print_success "Server stopped successfully!"
+    if sudo systemctl stop "$service_name"; then
+        sudo systemctl disable "$service_name" > /dev/null 2>&1
+        sudo rm -f "/etc/systemd/system/$service_name.service"
+        sudo systemctl daemon-reload
+        print_success "Proxy parado com sucesso na porta $port!"
     else
-        print_error "Failed to stop server"
+        print_error "Falha ao parar proxy na porta $port"
     fi
     
-    echo ""
-    read -p "Press Enter to continue..."
+    pause
 }
 
-restart_server() {    
-    if ! is_running; then
-        print_warning "Server is not running. Use 'Start Server' instead."
-        read -p "Press Enter to continue..."
+restart_proxy_service() {
+    print_header
+    
+    local active_ports=$(list_active_proxies)
+    
+    if [[ -z "$active_ports" ]]; then
+        print_error "Nenhum proxy ativo no momento."
+        pause
         return
     fi
     
-    print_info "Restarting server..."
-    systemctl restart "$SERVICE_NAME"
+    echo -e "${BLUE}Portas ativas: ${GREEN}$active_ports${RESET}"
+    echo -e "${BLUE}Digite a porta para reiniciar:${RESET}"
+    read -rp "> " port
     
-    sleep 2
+    port=$(echo "$port" | tr -d '[:space:]')
     
-    if is_running; then
-        print_success "Server restarted successfully!"
-    else
-        print_error "Failed to restart server"
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
-}
-
-show_status() {    
-    if is_running; then
-        print_success "Server is running"
-        echo ""
-        
-        load_config
-        
-        echo "Configuration:"
-        echo "  Port: $PORT"
-        echo "  TUN Interface: $TUN"
-        echo "  Virtual Subnet: $SUBNET"
-        echo ""
-        
-        print_info "Systemd Status:"
-        systemctl status "$SERVICE_NAME" --no-pager -l
-    else
-        print_warning "Server is not running"
-        echo ""
-        
-        if [ -f "$CONFIG_FILE" ]; then
-            load_config
-            echo "Last known configuration:"
-            echo "  Port: $PORT"
-            echo "  TUN Interface: $TUN"
-            echo "  Virtual Subnet: $SUBNET"
-        fi
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
-}
-
-view_logs() {    
-    if ! systemctl list-unit-files | grep -q "$SERVICE_NAME.service"; then
-        print_warning "Service not configured yet!"
-        read -p "Press Enter to continue..."
+    if ! validate_port "$port"; then
+        pause
         return
     fi
     
-    echo "Press Ctrl+C to stop following logs"
-    echo ""
-    sleep 2
+    local service_name=$(get_proxy_service_name "$port")
     
-    journalctl -u "$SERVICE_NAME" -f
-}
-
-change_token() {    
-    local current_token=$(load_token)
-    
-    if [ -n "$current_token" ]; then
-        echo "Current token: ${current_token:0:10}***"
-        echo ""
-    fi
-    
-    read -p "Enter new token: " new_token
-    
-    if [ -z "$new_token" ]; then
-        print_error "Token cannot be empty!"
-        read -p "Press Enter to continue..."
+    if ! systemctl is-active --quiet "$service_name"; then
+        print_error "Proxy na porta $port não está ativo."
+        pause
         return
     fi
     
-    if ! validate_and_save_token "$new_token"; then
-        echo ""
-        read -p "Press Enter to continue..."
+    print_info "Reiniciando proxy na porta $port..."
+    
+    if sudo systemctl restart "$service_name"; then
+        print_success "Proxy reiniciado com sucesso na porta $port!"
+    else
+        print_error "Falha ao reiniciar proxy na porta $port"
+    fi
+    
+    pause
+}
+
+show_proxy_logs() {
+    print_header
+
+    local active_ports=$(list_active_proxies)
+    
+    if [[ -z "$active_ports" ]]; then
+        print_error "Nenhum proxy ativo no momento."
+        pause
         return
     fi
     
-    echo ""
+    echo -e "${BLUE}Portas ativas: ${GREEN}$active_ports${RESET}"
+    echo -e "${BLUE}Digite a porta para ver os logs:${RESET}"
+    read -rp "> " port
     
-    if is_running; then
-        print_info "Updating service with new token..."
-        create_service "$new_token"
-        systemctl restart "$SERVICE_NAME"
-        
-        sleep 2
-        
-        if is_running; then
-            print_success "Token updated and service restarted!"
-        else
-            print_error "Service failed to restart with new token"
-        fi
-    else
-        print_success "Token updated! Start the server to use it."
+    port=$(echo "$port" | tr -d '[:space:]')
+    
+    if ! validate_port "$port"; then
+        pause
+        return
     fi
     
-    echo ""
-    read -p "Press Enter to continue..."
+    local log_file=$(get_proxy_log_file "$port")
+    
+    if [[ ! -f "$log_file" ]]; then
+        print_error "Arquivo de log não encontrado para porta $port"
+        pause
+        return
+    fi
+    
+    echo -e "${BLUE}Exibindo logs da porta $port (Ctrl+C para sair):${RESET}"
+    echo
+    
+    trap 'break' INT
+    while :; do
+        clear
+        sudo cat "$log_file"
+        echo -e "\n${YELLOW}Pressione Ctrl+C para retornar ao menu.${RESET}"
+        sleep 1
+    done
+    trap - INT
+    
+    pause
 }
 
-show_menu() {
-    clear
-
-    if true; then
-        load_config
-        echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
-        echo -e "${BOLD}${BLUE}║${NC}    ${GREEN}DT Proto Server Manager${NC}     ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} IP: ${GREEN}${SUBNET}${NC}               ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} Tun: ${GREEN}${TUN}${NC}                      ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} Port: ${GREEN}${PORT:-8080}${NC}                     ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
-    else
-        echo -e "${BOLD}${BLUE}╔════════════════════════════════╗${NC}"
-        echo -e "${BOLD}${BLUE}║${NC}      ${GREEN}Proto Server Manager${NC}      ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
-        echo -e "${BOLD}${BLUE}║${NC} ${RED}Status: Server is not running${NC}  ${BOLD}${BLUE}║${NC}"
-        echo -e "${BOLD}${BLUE}║════════════════════════════════║${NC}"
-    fi
-
-    if ! is_running; then
-        echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}01${CYAN}]${NC} ${GREEN}•${RED} Start Server            ${BOLD}${BLUE}║${NC}"
-    else
-        echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}01${CYAN}]${NC} ${GREEN}•${RED} Stop Server             ${BOLD}${BLUE}║${NC}"
-    fi
-
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}02${CYAN}]${NC} ${GREEN}•${RED} Restart Server          ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}03${CYAN}]${NC} ${GREEN}•${RED} Server Status           ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}04${CYAN}]${NC} ${GREEN}•${RED} View Logs               ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}05${CYAN}]${NC} ${GREEN}•${RED} Change Token            ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}║${NC} ${CYAN}[${GREEN}00${CYAN}]${NC} ${RED}•${RED} Exit                    ${BOLD}${BLUE}║${NC}"
-    echo -e "${BOLD}${BLUE}╚════════════════════════════════╝${NC}"
-    echo ""
-    echo -ne "${BOLD}👉 Select option:${NC} "
-}
-
-main() {
-    check_root
-    check_binary
-    init_dirs
-    ensure_token
+connection_menu() {
+    init_proxy_dirs
+    prompt_for_token_if_missing
     
     while true; do
-        show_menu
-        read option
-
-        case $option in
-            1|01)
-                is_running && stop_server || start_server
-                ;;
-            2|02)
-                restart_server
-                ;;
-            3|03)
-                show_status
-                ;;
-            4|04)
-                view_logs
-                ;;
-            5|05)
-                change_token
-                ;;
-            0|00)
-                echo "Exiting..."
-                exit 0
-                ;;
-            *)
-                echo ""
-                print_error "Invalid option!"
-                sleep 2
+        print_header
+        
+        local active_ports
+        active_ports=$(list_active_proxies)
+        
+        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+        echo -e "${BLUE}║${CYAN}                    DTunnel PROXY MENU                        ${BLUE}║${RESET}"
+        echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+        
+        if [[ -n "$active_ports" ]]; then
+            echo -e "${BLUE}║${WHITE}  Portas em uso: ${GREEN}$(printf '%-45s' "$active_ports")${BLUE}║${RESET}"
+            echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+        fi
+        
+        local menu_items=(
+            "1 • Abrir Porta"
+            "2 • Fechar Porta"
+            "3 • Reiniciar Porta"
+            "4 • Ver Log da Porta"
+            "0 • Voltar ao Menu Inicial"
+        )
+        
+        for item in "${menu_items[@]}"; do
+            local padding=$((60 - ${#item}))
+            if [[ $item == *"Voltar"* ]]; then
+                printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+            else
+                printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+            fi
+        done
+        
+        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+        echo
+        
+        local choice
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-5]:${RESET} ")" choice
+        
+        case "$choice" in
+            1) start_proxy_service ;;
+            2) stop_proxy_service ;;
+            3) restart_proxy_service ;;
+            4) show_proxy_logs ;;
+            0) return 0 ;;
+            *) 
+                print_error "Opção inválida: $choice"
+                pause 
                 ;;
         esac
     done
 }
 
-main "$@"
+get_config_value() {
+    local key="$1"
+    if [ -f "$CONFIG_FILE" ]; then
+        grep "^$key=" "$CONFIG_FILE" | cut -d'=' -f2
+    else
+        echo ""
+    fi
+}
+
+set_config_value() {
+    local key="$1"
+    local value="$2"
+    local temp_file=$(mktemp)
+
+    sudo mkdir -p "$(dirname "$CONFIG_FILE")"
+
+    if [ -f "$CONFIG_FILE" ]; then
+        grep -v "^$key=" "$CONFIG_FILE" > "$temp_file"
+    fi
+    echo "$key=$value" >> "$temp_file"
+    sudo mv "$temp_file" "$CONFIG_FILE"
+}
+
+load_token() {
+    if [ -f "$TOKEN_FILE" ]; then
+        sudo cat "$TOKEN_FILE"
+    fi
+}
+
+save_token() {
+    local token="$1"
+    save_unified_token "$token"
+}
+
+validate_token() {
+    local token="$1"
+    if [ -z "$token" ]; then
+        print_error "Token vazio. Não pode ser validado."
+        return 1
+    fi
+
+    print_info "Validando token..."
+    
+    if [ ! -f "$PROTO_SERVER_BIN" ]; then
+        print_error "Binário do servidor não encontrado."
+        return 1
+    fi
+    
+    if sudo "$PROTO_SERVER_BIN" --token "$token" --validate; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+is_server_active() {
+    systemctl is-active "$SERVICE_NAME" &> /dev/null
+}
+
+ensure_data_structure() {
+    
+    if [ ! -d "$DATA_DIR" ]; then
+        sudo mkdir -p "$DATA_DIR"
+        print_success "Diretório de dados criado: $DATA_DIR"
+    fi
+
+    if [ ! -f "$CREDENTIALS_FILE" ]; then
+        print_info "Criando arquivo de credenciais..."
+        sudo cat > "$CREDENTIALS_FILE" <<EOF
+{
+  "credentials": [
+    {
+      "username": "Dtunnel",
+      "password": "Dtunnel"
+    }
+  ]
+}
+EOF
+        sudo chmod 644 "$CREDENTIALS_FILE"
+        print_success "Arquivo credentials.json criado com credenciais padrão."
+    fi
+}
+
+create_systemd_service() {
+    local current_token=$(load_token)
+    local port=$(get_config_value "PORT")
+    local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
+    local tun=$(get_config_value "TUN_INTERFACE")
+
+    if [ -z "$current_token" ]; then
+        print_error "Token não configurado."
+        return 1
+    fi
+    if [ -z "$port" ] || [ -z "$subnet" ] || [ -z "$tun" ]; then
+        print_error "Configurações incompletas."
+        return 1
+    fi
+
+    print_info "Criando serviço systemd..."
+
+    sudo cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
+[Unit]
+Description=DTProto Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=$PROTO_SERVER_BIN --token=$current_token --listen-addr=:$port --virtual-subnet-cidr=$subnet --tun=$tun --auth-file=$CREDENTIALS_FILE --stats-file=$DATA_DIR/stats.json
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    print_success "Serviço systemd configurado."
+}
+
+start_server() {
+    print_header
+    
+    ensure_data_structure 
+    check_or_set_token
+
+    local port=$(get_config_value "PORT")
+    local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
+    local tun=$(get_config_value "TUN_INTERFACE")
+
+    port=${port:-5000}
+    subnet=${subnet:-10.10.0.0/16}
+    tun=${tun:-tun0}
+
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}  📋 CONFIGURAÇÕES ATUAIS ${BLUE}                                    ║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "$port")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Sub-rede: ${BLUE}$(printf '%-48s' "$subnet")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┗ Interface TUN: ${BLUE}$(printf '%-43s' "$tun")${BLUE}║${RESET}"
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+
+    validate_port() {
+        local port_num=$1
+        
+        if ! [[ "$port_num" =~ ^[0-9]+$ ]]; then
+            print_error "Porta deve ser um número!"
+            return 1
+        fi
+       
+        if [ "$port_num" -lt 1 ] || [ "$port_num" -gt 65535 ]; then
+            print_error "Porta deve estar entre 1 e 65535!"
+            return 1
+        fi
+        
+        if [ "$port_num" -lt 1024 ] && [ "$EUID" -ne 0 ]; then
+            print_warning "Portas abaixo de 1024 requerem privilégios de root!"
+        fi
+        
+        return 0
+    }
+
+    check_port_available() {
+        local port_num=$1
+        
+        if command -v netstat >/dev/null 2>&1; then
+            if netstat -tuln | grep -q ":$port_num "; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+        
+        if command -v ss >/dev/null 2>&1; then
+            if ss -tuln | grep -q ":$port_num "; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+        
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z 127.0.0.1 "$port_num" 2>/dev/null; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+        
+        return 0
+    }
+
+    while true; do
+        echo -e "${BLUE}Porta (Enter para manter [$port]):${RESET}"
+        read -rp "> " new_port_input
+        
+        if [ -z "$new_port_input" ]; then
+            break
+        fi
+        
+        if validate_port "$new_port_input" && check_port_available "$new_port_input"; then
+            port="$new_port_input"
+            print_success "Porta $port validada com sucesso!"
+            break
+        else
+            print_warning "Por favor, insira uma porta válida e disponível."
+            echo
+        fi
+    done
+
+    echo -e "${BLUE}Sub-rede CIDR (Enter para manter [$subnet]):${RESET}"
+    read -rp "> " new_subnet_input
+    
+    echo -e "${BLUE}Interface TUN (Enter para manter [$tun]):${RESET}"
+    read -rp "> " new_tun_input
+
+    if [ -n "$new_subnet_input" ]; then
+        subnet="$new_subnet_input"
+    fi
+    if [ -n "$new_tun_input" ]; then
+        tun="$new_tun_input"
+    fi
+
+    set_config_value "PORT" "$port"
+    set_config_value "VIRTUAL_SUBNET_CIDR" "$subnet"
+    set_config_value "TUN_INTERFACE" "$tun"
+    
+    print_success "Configurações salvas!"
+
+    if create_systemd_service; then
+        print_info "Iniciando servidor na porta $port..."
+        if sudo systemctl start "$SERVICE_NAME"; then
+            sudo systemctl enable "$SERVICE_NAME" &> /dev/null
+            print_success "Servidor DTProto iniciado com sucesso!"
+            
+            sleep 2
+            if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+                print_success "Servidor está ativo e rodando na porta $port"
+            else
+                print_error "Servidor pode não ter iniciado corretamente."
+                print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
+            fi
+        else
+            print_error "Falha ao iniciar o serviço."
+            print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
+        fi
+    fi
+    pause
+}
+
+stop_server() {
+    
+    if is_server_active; then
+        print_info "Parando serviço $SERVICE_NAME..."
+        sudo systemctl stop "$SERVICE_NAME"
+        print_success "Servidor parado."
+    else
+        print_error "Servidor não está ativo."
+    fi
+    pause
+}
+
+restart_server() {
+    
+    if is_server_active; then
+        print_info "Reiniciando serviço $SERVICE_NAME..."
+        sudo systemctl restart "$SERVICE_NAME"
+        print_success "Servidor reiniciado."
+    else
+        print_error "Servidor não está ativo."
+    fi
+    pause
+}
+
+show_server_status() {
+    print_header
+    
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}  📊 STATUS DO SISTEMA${BLUE}                                        ║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local port=$(get_config_value 'PORT')
+    local subnet=$(get_config_value 'VIRTUAL_SUBNET_CIDR')
+    local tun=$(get_config_value 'TUN_INTERFACE')
+    local token_status=$([ -f "$TOKEN_FILE" ] && echo '✅' || echo '❌')
+    
+    if is_server_active; then
+        echo -e "${BLUE}║${WHITE}  ┣ Status: ${GREEN}🟢              ${BLUE}                                  ║${RESET}"
+    else
+        echo -e "${BLUE}║${WHITE}  ┣ Status: ${RED}🔴         ${BLUE}                                       ║${RESET}"
+    fi
+    
+    echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "${port:-5000}")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Sub-rede Virtual: ${BLUE}$(printf '%-40s' "${subnet:-10.10.0.0/16}")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Interface TUN: ${BLUE}$(printf '%-43s' "${tun:-tun0}")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┗ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+
+    pause
+}
+
+view_logs() {
+    
+    print_info "Exibindo logs (Ctrl+C para sair)..."
+    echo
+    sudo journalctl -u "$SERVICE_NAME" -f
+    pause
+}
+
+change_port() {
+    print_header
+    
+    local current_port=$(get_config_value "PORT")
+    local is_running=$(is_server_active && echo "true" || echo "false")
+
+    echo -e "${WHITE}Porta atual: ${BLUE}${current_port:-5000}${RESET}"
+
+    validate_port() {
+        local port_num=$1
+        
+        if ! [[ "$port_num" =~ ^[0-9]+$ ]]; then
+            print_error "Porta deve ser um número!"
+            return 1
+        fi
+        
+        if [ "$port_num" -lt 1 ] || [ "$port_num" -gt 65535 ]; then
+            print_error "Porta deve estar entre 1 e 65535!"
+            return 1
+        fi
+        
+        if [ "$port_num" -lt 1024 ] && [ "$EUID" -ne 0 ]; then
+            print_warning "Portas abaixo de 1024 requerem privilégios de root!"
+        fi
+        
+        return 0
+    }
+
+    check_port_available() {
+        local port_num=$1
+        
+        if command -v netstat >/dev/null 2>&1; then
+            if netstat -tuln | grep -q ":$port_num "; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+        
+        if command -v ss >/dev/null 2>&1; then
+            if ss -tuln | grep -q ":$port_num "; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+        
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z 127.0.0.1 "$port_num" 2>/dev/null; then
+                print_error "Porta $port_num já está em uso!"
+                return 1
+            fi
+        fi
+
+        if [ "$port_num" -eq "$current_port" ]; then
+            print_warning "Esta já é a porta atual!"
+            return 1
+        fi
+        
+        return 0
+    }
+
+    local new_port
+    while true; do
+        echo -e "${BLUE}Nova porta (1-65535):${RESET}"
+        read -rp "> " new_port
+        
+        new_port=$(echo "$new_port" | tr -d '\000-\037')
+        
+        if validate_port "$new_port" && check_port_available "$new_port"; then
+            print_success "Porta $new_port validada com sucesso!"
+            break
+        else
+            print_warning "Por favor, insira uma porta válida e disponível."
+            echo
+        fi
+    done
+
+    echo
+    echo -e "${YELLOW}Alterar a porta de $current_port para $new_port${RESET}"
+    echo -e "${YELLOW}Isso afetará todos os clientes conectados.${RESET}"
+    
+    if confirm_action "Deseja continuar?"; then
+        set_config_value "PORT" "$new_port"
+        print_success "Porta atualizada para $new_port"
+
+        if [ "$is_running" == "true" ]; then
+            print_info "Reiniciando servidor com nova configuração..."
+            if create_systemd_service; then
+                if sudo systemctl restart "$SERVICE_NAME"; then
+                    print_success "Servidor reiniciado na porta $new_port!"
+                    
+                    sleep 2
+                    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+                        print_success "Servidor está ativo e rodando na nova porta $new_port"
+                    else
+                        print_error "Servidor pode não ter reiniciado corretamente."
+                        print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
+                    fi
+                else
+                    print_error "Falha ao reiniciar o serviço."
+                    print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
+                fi
+            else
+                print_error "Falha ao atualizar o serviço systemd."
+            fi
+        else
+            print_info "Servidor não está em execução. A nova porta será usada no próximo início."
+        fi
+    else
+        print_info "Alteração de porta cancelada."
+    fi
+    
+    pause
+}
+
+change_token_menu() {
+    print_header
+    
+    local new_token
+    while true; do
+        echo -e "${BLUE}Insira o token:${RESET}"
+        read -rp "> " new_token
+        
+        new_token=$(echo "$new_token" | tr -d '\000-\037')
+        
+        if [ -z "$new_token" ]; then
+            print_error "Token não pode ser vazio."
+            continue
+        fi
+       
+        if validate_token "$new_token"; then
+            save_unified_token "$new_token"
+            break
+        else
+            print_error "Tente novamente."
+        fi
+    done
+
+    if is_server_active; then
+        print_info "Reiniciando servidor com novo token..."
+        if create_systemd_service; then
+            sudo systemctl restart "$SERVICE_NAME"
+            print_success "Servidor reiniciado com novo token!"
+        else
+            print_error "Falha ao reiniciar o serviço."
+        fi
+    fi
+    pause
+}
+
+check_or_set_token() {
+    local current_token=$(load_token)
+    
+    if [ -z "$current_token" ]; then
+        print_warning "Token de autenticação não encontrado."
+        change_token_menu
+    fi
+}
+
+check_token_on_startup() {
+    if [ ! -f "$TOKEN_FILE" ]; then
+        print_warning "Token de autenticação não encontrado!"
+        print_info "Para usar o DTProto Server, você precisa configurar um token válido."
+        echo
+        
+        change_token_menu
+    fi
+}
+
+protocol_main_menu() {
+    while true; do
+        print_header
+        print_status
+        print_main_menu
+        
+        local option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-8]:${RESET} ")" option
+        
+        case "$option" in
+            1) start_server ;;
+            2) stop_server ;;
+            3) restart_server ;;
+            4) show_server_status ;;
+            5) view_logs ;;
+            6) change_port ;;
+            7) change_token_menu ;;
+            0) return 0 ;;
+            *) 
+                print_error "Opção inválida: $option"
+                pause 
+                ;;
+        esac
+    done
+}
+
+initial_menu() {
+    while true; do
+        print_header
+        print_status
+        print_initial_menu
+        
+        local option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-2]:${RESET} ")" option
+        
+        case "$option" in
+            1) protocol_main_menu ;;
+            2) connection_menu ;;
+            *) 
+                print_error "Opção inválida: $option"
+                pause 
+                ;;
+        esac
+    done
+}
+
+if [ "$EUID" -ne 0 ]; then
+    print_error "Este script requer privilégios de root."
+    echo -e "${YELLOW}Execute com: ${WHITE}sudo $0${RESET}"
+    exit 1
+fi
+
+check_token_on_startup
+
+initial_menu
