@@ -53,7 +53,7 @@ sudo proto
 ### Estrutura de diretórios
 
 - Configurações: `/etc/proto-server/config.conf` e `/etc/proto-server/token`.
-- Certificados TLS gerados automaticamente: `/etc/proto-server/cert.pem` e `key.pem`.
+- Certificados TLS gerados automaticamente: `/var/lib/proto-server/cert.pem` e `key.pem`.
 - Dados e arquivos auxiliares: `/var/lib/proto-server/credentials.json` e `stats.json`.
 - Serviço systemd: `/etc/systemd/system/proto-server.service`.
 
@@ -73,12 +73,6 @@ sudo rm -rf /etc/proto-server /var/lib/proto-server
 sudo systemctl daemon-reload
 ```
 
-## 🛠️ Solução de Problemas
-
-- **Token inválido**: use `sudo proto` → `Change Token` para validar novamente.
-- **Serviço não inicia**: confira os logs com `journalctl -u proto-server -n 50`.
-- **Porta em uso**: ajuste a porta pelo menu `Start Server` ou edite `/etc/proto-server/config.conf`.
-- **Permissões**: todos os comandos administrativos precisam ser executados com `sudo`.
 
 ## 📞 Suporte
 
