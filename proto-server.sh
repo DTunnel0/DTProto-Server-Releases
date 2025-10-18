@@ -6,6 +6,8 @@ TOKEN_FILE="/etc/proto-server/token"
 CONFIG_FILE="/etc/proto-server/config.conf"
 DATA_DIR="/var/lib/proto-server"
 CREDENTIALS_FILE="$DATA_DIR/credentials.json"
+CERTIFICATE_SSL_FILE="$DATA_DIR/cert.pem"
+PRIVATE_KEY_SSL_FILE="$DATA_DIR/key.pem"
 SERVICE_NAME="proto-server"
 
 PROXY_DIR="/etc/proxy"
@@ -158,6 +160,19 @@ pause() {
     read -r
 }
 
+init_certificate_proto() {
+    if [[ ! -f "$CERTIFICATE_SSL_FILE" ]] || [[ ! -f "$PRIVATE_KEY_SSL_FILE" ]]; then
+        print_info "Generating TLS certificates..."
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout "$PRIVATE_KEY_SSL_FILE" \
+            -out "$CERTIFICATE_SSL_FILE" \
+            -subj "/C=BR/ST=State/L=City/O=ProtoServer/CN=proto-server" \
+            2>/dev/null
+        chmod 600 "$PRIVATE_KEY_SSL_FILE"
+        chmod 644 "$CERTIFICATE_SSL_FILE"
+    fi
+}
+
 init_proxy_dirs() {
     sudo mkdir -p "$PROXY_DIR" "$PROXY_CONFIG_DIR" "$PROXY_LOG_DIR"
 }
@@ -279,9 +294,9 @@ confirm_action() {
     esac
 }
 
-get_ssh_port() {
-    local ssh_port=$(get_config_value "PORT")
-    echo "${ssh_port:-5000}"
+get_proto_port() {
+    local proto_port=$(get_config_value "PORT")
+    echo "${proto_port:-5000}"
 }
 
 build_proxy_command() {
@@ -294,8 +309,8 @@ build_proxy_command() {
     
     local command="$PROXY_EXECUTABLE --token=$token --buffer-size=$DEFAULT_BUFFER_SIZE --response=$http_response --domain --log-file=$(get_proxy_log_file "$port")"
     
-    local ssh_port=$(get_ssh_port)
-    command="$command --ssh-port=$ssh_port"
+    local proto_port=$(get_proto_port)
+    command="$command --dt-proto-port=$proto_port"
     
     if [[ "$ssl_enabled" == "true" ]]; then
         command="$command --port=$port:ssl"
@@ -687,7 +702,15 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart=$PROTO_SERVER_BIN --token=$current_token --listen-addr=:$port --virtual-subnet-cidr=$subnet --tun=$tun --auth-file=$CREDENTIALS_FILE --stats-file=$DATA_DIR/stats.json
+ExecStart=$PROTO_SERVER_BIN \\
+    --token=$current_token \\
+    --listen-addr=:$port \\
+    --virtual-subnet-cidr=$subnet \\
+    --tun=$tun \\
+    --auth-file=$CREDENTIALS_FILE \\
+    --tls-cert-file $CERTIFICATE_SSL_FILE \\
+    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
+    --stats-file=$DATA_DIR/stats.json
 Restart=always
 
 [Install]
@@ -1106,6 +1129,8 @@ if [ "$EUID" -ne 0 ]; then
     echo -e "${YELLOW}Execute com: ${WHITE}sudo $0${RESET}"
     exit 1
 fi
+
+init_certificate_proto
 
 check_token_on_startup
 
