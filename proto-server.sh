@@ -18,6 +18,13 @@ PROXY_LOG_DIR="/var/log/proxy"
 PROXY_SERVICE_PREFIX="proxy"
 PROXY_EXECUTABLE="/usr/local/bin/proxy-server"
 
+AUTH_MODE_FILE="file"
+AUTH_MODE_URL="url" 
+AUTH_MODE_NONE="none"
+CURRENT_AUTH_MODE=$(get_config_value "AUTH_MODE")
+CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
+CURRENT_AUTH_URL=$(get_config_value "AUTH_URL")
+
 DEFAULT_BUFFER_SIZE=32768
 DEFAULT_HTTP_RESPONSE="DTunnel"
 MIN_PORT=1
@@ -98,6 +105,7 @@ print_main_menu() {
         "5 • Visualizar Logs"
         "6 • Alterar Porta"
         "7 • Gerenciar Token"
+        "8 • Modo de Autenticação"
         "0 • Voltar ao Menu Inicial"
     )
     
@@ -694,6 +702,7 @@ create_systemd_service() {
     local port=$(get_config_value "PORT")
     local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
     local tun=$(get_config_value "TUN_INTERFACE")
+    local auth_flag=$(get_auth_flag)
 
     if [ -z "$current_token" ]; then
         print_error "Token não configurado."
@@ -706,6 +715,20 @@ create_systemd_service() {
 
     print_info "Criando serviço systemd..."
 
+    local service_command="$PROTO_SERVER_BIN \\
+    --token=$current_token \\
+    --listen-addr=:$port \\
+    --virtual-subnet-cidr=$subnet \\
+    --tun=$tun \\
+    --tls-cert-file $CERTIFICATE_SSL_FILE \\
+    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
+    --stats-file=$STATS_FILE"
+
+    if [[ -n "$auth_flag" ]]; then
+        service_command="$service_command \\
+    $auth_flag"
+    fi
+
     sudo cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
 Description=DTProto Server
@@ -715,15 +738,7 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart=$PROTO_SERVER_BIN \\
-    --token=$current_token \\
-    --listen-addr=:$port \\
-    --virtual-subnet-cidr=$subnet \\
-    --tun=$tun \\
-    --auth-file=$CREDENTIALS_FILE \\
-    --tls-cert-file $CERTIFICATE_SSL_FILE \\
-    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
-    --stats-file=$STATS_FILE
+ExecStart=$service_command
 Restart=always
 
 [Install]
@@ -896,6 +911,9 @@ show_server_status() {
     local port=$(get_config_value 'PORT')
     local subnet=$(get_config_value 'VIRTUAL_SUBNET_CIDR')
     local tun=$(get_config_value 'TUN_INTERFACE')
+    local auth_mode=$(get_config_value 'AUTH_MODE')
+    auth_mode=${auth_mode:-$AUTH_MODE_FILE}
+    local auth_url=$(get_config_value 'AUTH_URL')
     local token_status=$([ -f "$TOKEN_FILE" ] && echo '✅' || echo '❌')
     
     if is_server_active; then
@@ -907,7 +925,16 @@ show_server_status() {
     echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "${port:-5000}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Sub-rede Virtual: ${BLUE}$(printf '%-40s' "${subnet:-10.10.0.0/16}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Interface TUN: ${BLUE}$(printf '%-43s' "${tun:-tun0}")${BLUE}║${RESET}"
-    echo -e "${BLUE}║${WHITE}  ┗ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
+    
+    local auth_display=""
+    case "$auth_mode" in
+        $AUTH_MODE_FILE) auth_display="Arquivo" ;;
+        $AUTH_MODE_URL) auth_display="URL ($auth_url)" ;;
+        $AUTH_MODE_NONE) auth_display="Nenhuma" ;;
+        *) auth_display="Arquivo" ;;
+    esac
+    echo -e "${BLUE}║${WHITE}  ┗ Autenticação: ${BLUE}$(printf '%-44s' "$auth_display")${BLUE}║${RESET}"
     
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo
@@ -920,6 +947,120 @@ view_logs() {
     print_info "Exibindo logs (Ctrl+C para sair)..."
     echo
     sudo journalctl -u "$SERVICE_NAME" -f
+    pause
+}
+
+get_auth_flag() {
+    local auth_mode=$(get_config_value "AUTH_MODE")
+    auth_mode=${auth_mode:-$AUTH_MODE_FILE}
+    local auth_url=$(get_config_value "AUTH_URL")
+    
+    case "$auth_mode" in
+        $AUTH_MODE_URL)
+            if [[ -n "$auth_url" ]]; then
+                echo "--auth-url=$auth_url"
+            else
+                echo "--auth-file=$CREDENTIALS_FILE"
+            fi
+            ;;
+        $AUTH_MODE_FILE)
+            echo "--auth-file=$CREDENTIALS_FILE"
+            ;;
+        $AUTH_MODE_NONE)
+            echo ""
+            ;;
+        *)
+            echo "--auth-file=$CREDENTIALS_FILE"
+            ;;
+    esac
+}
+
+change_auth_mode() {
+    print_header
+    
+    local current_mode=$(get_config_value "AUTH_MODE")
+    current_mode=${current_mode:-$AUTH_MODE_FILE}
+    local current_url=$(get_config_value "AUTH_URL")
+    
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}                 ALTERAR MODO DE AUTENTICAÇÃO                 ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local mode_line="${WHITE}  Modo atual: ${GREEN}$current_mode"
+    local mode_padding=$((60 - ${#mode_line} + 22)) 
+    printf "${BLUE}║${mode_line}%${mode_padding}s${BLUE}║${RESET}\n" ""
+    
+    if [[ "$current_mode" == "$AUTH_MODE_URL" && -n "$current_url" ]]; then
+        local url_line="${WHITE}  URL atual: ${CYAN}$current_url"
+        local url_padding=$((60 - ${#url_line} + 22)) 
+        printf "${BLUE}║${url_line}%${url_padding}s${BLUE}║${RESET}\n" ""
+    fi
+    
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local menu_items=(
+        "1 • Arquivo ($CREDENTIALS_FILE)"
+        "2 • URL personalizada"
+        "3 • Sem autenticação"
+        "0 • Voltar"
+    )
+    
+    for item in "${menu_items[@]}"; do
+        local padding=$((60 - ${#item}))
+        if [[ $item == *"Voltar"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        else
+            printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        fi
+    done
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+    
+    local option
+    read -rp "$(echo -e "${BLUE}Selecione uma opção [0-3]:${RESET} ")" option
+    
+    case "$option" in
+        1)
+            set_config_value "AUTH_MODE" "$AUTH_MODE_FILE"
+            set_config_value "AUTH_URL" ""
+            print_success "Modo de autenticação alterado para: Arquivo"
+            ;;
+        2)
+            echo -e "${BLUE}Digite a URL de autenticação:${RESET}"
+            read -rp "> " auth_url
+            if [[ -n "$auth_url" ]]; then
+                set_config_value "AUTH_MODE" "$AUTH_MODE_URL"
+                set_config_value "AUTH_URL" "$auth_url"
+                print_success "Modo de autenticação alterado para: URL ($auth_url)"
+            else
+                print_error "URL não pode ser vazia!"
+            fi
+            ;;
+        3)
+            set_config_value "AUTH_MODE" "$AUTH_MODE_NONE"
+            set_config_value "AUTH_URL" ""
+            print_success "Autenticação desativada"
+            ;;
+        0)
+            return
+            ;;
+        *)
+            print_error "Opção inválida!"
+            ;;
+    esac
+    
+    if is_server_active; then
+        echo
+        print_info "Reiniciando serviço para aplicar mudanças..."
+        if create_systemd_service; then
+            sudo systemctl restart "$SERVICE_NAME"
+            print_success "Serviço reiniciado com nova configuração de autenticação!"
+        else
+            print_error "Falha ao atualizar o serviço."
+        fi
+    fi
+    
     pause
 }
 
@@ -1108,6 +1249,7 @@ protocol_main_menu() {
             5) view_logs ;;
             6) change_port ;;
             7) change_token_menu ;;
+            8) change_auth_mode ;; 
             0) return 0 ;;
             *) 
                 print_error "Opção inválida: $option"
