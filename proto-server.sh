@@ -6,6 +6,7 @@ TOKEN_FILE="/etc/proto-server/token"
 CONFIG_FILE="/etc/proto-server/config.conf"
 DATA_DIR="/var/lib/proto-server"
 CREDENTIALS_FILE="$DATA_DIR/credentials.json"
+STATS_FILE="$DATA_DIR/stats.json"
 CERTIFICATE_SSL_FILE="$DATA_DIR/cert.pem"
 PRIVATE_KEY_SSL_FILE="$DATA_DIR/key.pem"
 SERVICE_NAME="proto-server"
@@ -671,6 +672,13 @@ EOF
         sudo chmod 644 "$CREDENTIALS_FILE"
         print_success "Arquivo credentials.json criado com credenciais padrão."
     fi
+
+    if [ ! -f "$STATS_FILE" ]; then
+        print_info "Criando arquivo de estatísticas..."
+        echo "{}" > "$STATS_FILE"
+        sudo chmod 644 "$STATS_FILE"
+        print_success "Arquivo stats.json criado."
+    fi
 }
 
 create_systemd_service() {
@@ -707,7 +715,7 @@ ExecStart=$PROTO_SERVER_BIN \\
     --auth-file=$CREDENTIALS_FILE \\
     --tls-cert-file $CERTIFICATE_SSL_FILE \\
     --tls-key-file $PRIVATE_KEY_SSL_FILE \\
-    --stats-file=$DATA_DIR/stats.json
+    --stats-file=$STATS_FILE
 Restart=always
 
 [Install]
