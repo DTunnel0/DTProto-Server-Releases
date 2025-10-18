@@ -662,8 +662,8 @@ ensure_data_structure() {
 {
   "credentials": [
     {
-      "username": "Dtunnel",
-      "password": "Dtunnel"
+      "user": "Dtunnel",
+      "pass": "Dtunnel"
     }
   ]
 }
