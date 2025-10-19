@@ -20,6 +20,7 @@ PROXY_EXECUTABLE="/usr/local/bin/proxy-server"
 
 AUTH_MODE_FILE="file"
 AUTH_MODE_URL="url" 
+AUTH_MODE_SSH="ssh"
 AUTH_MODE_NONE="none"
 CURRENT_AUTH_MODE=$(get_config_value "AUTH_MODE")
 CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
@@ -931,6 +932,7 @@ show_server_status() {
     case "$auth_mode" in
         $AUTH_MODE_FILE) auth_display="Arquivo" ;;
         $AUTH_MODE_URL) auth_display="URL ($auth_url)" ;;
+        $AUTH_MODE_SSH) auth_display="SSH/PAM" ;; 
         $AUTH_MODE_NONE) auth_display="Nenhuma" ;;
         *) auth_display="Arquivo" ;;
     esac
@@ -963,6 +965,9 @@ get_auth_flag() {
                 echo "--auth-file=$CREDENTIALS_FILE"
             fi
             ;;
+        $AUTH_MODE_SSH) 
+            echo "--auth-url=http://127.0.0.1:5001/auth"
+            ;;
         $AUTH_MODE_FILE)
             echo "--auth-file=$CREDENTIALS_FILE"
             ;;
@@ -973,6 +978,115 @@ get_auth_flag() {
             echo "--auth-file=$CREDENTIALS_FILE"
             ;;
     esac
+}
+
+setup_ssh_auth() {
+    print_info "Configurando autenticação SSH/PAM..."
+    
+    local SCRIPT_PATH="/usr/local/bin/ssh_auth.py"
+    local VENV_PATH="/usr/local/bin/ssh_auth_venv"
+    local SERVICE_NAME="ssh-auth-api"
+    local SERVICE_FILE="/etc/systemd/system/ssh-auth-api.service"
+    
+    echo ">>> Atualizando pacotes..."
+    sudo apt update -y
+
+    echo ">>> Instalando dependências..."
+    sudo apt install -y python3 python3-venv python3-pip curl systemd
+
+    echo ">>> Instalando módulo PAM..."
+    if ! sudo apt install -y python3-pam; then
+        echo ">>> Pacote python3-pam não disponível, tentando via pip..."
+        sudo pip3 install python-pam || sudo pip3 install pam
+    fi
+
+    echo ">>> Criando script ssh_auth.py..."
+    sudo tee "$SCRIPT_PATH" > /dev/null << 'EOF'
+import logging
+from flask import Flask, request, jsonify
+import pam
+
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+
+p = pam.pam()
+
+@app.route('/auth', methods=['POST'])
+def auth():
+    if not request.json:
+        return jsonify({'success': False, 'message': 'invalid request'}), 400
+
+    username = request.json.get('username')
+    password = request.json.get('password')
+
+    if not username or not password:
+        return jsonify({'success': False, 'message': 'username and password required'}), 400
+
+    logging.info('Authentication request for user: %s', username)
+
+    try:
+        if p.authenticate(username, password):
+            logging.info('Authentication successful for user: %s', username)
+            return jsonify({'success': True, 'message': 'Authentication successful'}), 200
+        else:
+            logging.info('Authentication failed for user: %s', username)
+            return jsonify({'success': False, 'message': 'invalid credentials'}), 401
+    except Exception as e:
+        logging.error('PAM error: %s', e)
+        return jsonify({'success': False, 'message': 'authentication error'}), 500
+
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=5001, debug=False)
+EOF
+
+    sudo chmod +x "$SCRIPT_PATH"
+
+    echo ">>> Criando ambiente virtual..."
+    sudo python3 -m venv "$VENV_PATH"
+    sudo "$VENV_PATH/bin/pip" install --upgrade pip
+
+    echo ">>> Instalando dependências no ambiente virtual..."
+    sudo "$VENV_PATH/bin/pip" install flask six python-pam || sudo "$VENV_PATH/bin/pip" install flask six pam
+
+    echo ">>> Criando serviço systemd..."
+    sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+[Unit]
+Description=SSH Auth Python Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${VENV_PATH}/bin/python ${SCRIPT_PATH}
+WorkingDirectory=/usr/local/bin
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo ">>> Recarregando e iniciando serviço..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME"
+    sudo systemctl restart "$SERVICE_NAME"
+
+    sleep 2
+    
+    echo ">>> Verificando status do serviço..."
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Serviço SSH Auth API criado e iniciado com sucesso!"
+        print_info "API rodando em: http://127.0.0.1:5001/auth"
+        
+        set_config_value "AUTH_MODE" "$AUTH_MODE_SSH"
+        set_config_value "AUTH_URL" "http://127.0.0.1:5001/auth"
+        
+        print_success "Autenticação SSH/PAM configurada com sucesso!"
+    else
+        print_error "Falha ao iniciar o serviço SSH Auth API."
+        print_info "Verifique os logs: sudo journalctl -u ssh-auth-api -f"
+        return 1
+    fi
 }
 
 change_auth_mode() {
@@ -1001,7 +1115,8 @@ change_auth_mode() {
     local menu_items=(
         "1 • Arquivo ($CREDENTIALS_FILE)"
         "2 • URL personalizada"
-        "3 • Sem autenticação"
+        "3 • SSH (PAM Authentication)" 
+        "4 • Sem autenticação"
         "0 • Voltar"
     )
     
@@ -1018,7 +1133,7 @@ change_auth_mode() {
     echo
     
     local option
-    read -rp "$(echo -e "${BLUE}Selecione uma opção [0-3]:${RESET} ")" option
+    read -rp "$(echo -e "${BLUE}Selecione uma opção [0-4]:${RESET} ")" option 
     
     case "$option" in
         1)
@@ -1037,7 +1152,10 @@ change_auth_mode() {
                 print_error "URL não pode ser vazia!"
             fi
             ;;
-        3)
+        3) 
+            setup_ssh_auth
+            ;;
+        4) 
             set_config_value "AUTH_MODE" "$AUTH_MODE_NONE"
             set_config_value "AUTH_URL" ""
             print_success "Autenticação desativada"
@@ -1270,6 +1388,8 @@ remove_completely() {
     echo -e "${YELLOW}Itens que serão removidos:${RESET}"
     echo -e "${WHITE}  • Serviço DTProto Server${RESET}"
     echo -e "${WHITE}  • Todos os serviços Proxy ativos${RESET}"
+    echo -e "${WHITE}  • Serviço SSH Auth API${RESET}"
+    echo -e "${WHITE}  • Ambiente virtual SSH Auth${RESET}"
     echo -e "${WHITE}  • Binários do sistema${RESET}"
     echo -e "${WHITE}  • Arquivos de configuração${RESET}"
     echo -e "${WHITE}  • Arquivos de dados e logs${RESET}"
@@ -1289,6 +1409,17 @@ remove_completely() {
         sudo systemctl stop "$SERVICE_NAME"
         sudo systemctl disable "$SERVICE_NAME" 2>/dev/null
     fi
+    
+    print_info "Parando serviço SSH Auth API..."
+    if systemctl is-active --quiet ssh-auth-api; then
+        sudo systemctl stop ssh-auth-api
+        sudo systemctl disable ssh-auth-api 2>/dev/null
+        sudo rm -f "/etc/systemd/system/ssh-auth-api.service"
+    fi
+    
+    print_info "Removendo arquivos SSH Auth API..."
+    sudo rm -f "/usr/local/bin/ssh_auth.py"
+    sudo rm -rf "/usr/local/bin/ssh_auth_venv" 
     
     print_info "Parando todos os serviços proxy..."
     for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
