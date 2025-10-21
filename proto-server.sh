@@ -18,6 +18,14 @@ PROXY_LOG_DIR="/var/log/proxy"
 PROXY_SERVICE_PREFIX="proxy"
 PROXY_EXECUTABLE="/usr/local/bin/proxy-server"
 
+AUTH_MODE_FILE="file"
+AUTH_MODE_URL="url" 
+AUTH_MODE_SSH="ssh"
+AUTH_MODE_NONE="none"
+CURRENT_AUTH_MODE=$(get_config_value "AUTH_MODE")
+CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
+CURRENT_AUTH_URL=$(get_config_value "AUTH_URL")
+
 DEFAULT_BUFFER_SIZE=32768
 DEFAULT_HTTP_RESPONSE="DTunnel"
 MIN_PORT=1
@@ -98,6 +106,7 @@ print_main_menu() {
         "5 • Visualizar Logs"
         "6 • Alterar Porta"
         "7 • Gerenciar Token"
+        "8 • Modo de Autenticação"
         "0 • Voltar ao Menu Inicial"
     )
     
@@ -116,17 +125,25 @@ print_main_menu() {
 
 print_initial_menu() {
     echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BLUE}║${WHITE}                     MENU INICIAL                             ${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}                        MENU INICIAL                          ${BLUE}║${RESET}"
     echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
     
     local menu_items=(
         "1 • Menu Principal do Protocolo"
         "2 • Menu de Conexão"
+        "3 • Remover Script"
+        "0 • Sair"
     )
     
     for item in "${menu_items[@]}"; do
         local padding=$((60 - ${#item}))
-        printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        if [[ $item == *"Remover"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        elif [[ $item == *"Sair"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        else
+            printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        fi
     done
     
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
@@ -686,6 +703,7 @@ create_systemd_service() {
     local port=$(get_config_value "PORT")
     local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
     local tun=$(get_config_value "TUN_INTERFACE")
+    local auth_flag=$(get_auth_flag)
 
     if [ -z "$current_token" ]; then
         print_error "Token não configurado."
@@ -698,6 +716,20 @@ create_systemd_service() {
 
     print_info "Criando serviço systemd..."
 
+    local service_command="$PROTO_SERVER_BIN \\
+    --token=$current_token \\
+    --listen-addr=:$port \\
+    --virtual-subnet-cidr=$subnet \\
+    --tun=$tun \\
+    --tls-cert-file $CERTIFICATE_SSL_FILE \\
+    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
+    --stats-file=$STATS_FILE"
+
+    if [[ -n "$auth_flag" ]]; then
+        service_command="$service_command \\
+    $auth_flag"
+    fi
+
     sudo cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
 Description=DTProto Server
@@ -707,15 +739,7 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart=$PROTO_SERVER_BIN \\
-    --token=$current_token \\
-    --listen-addr=:$port \\
-    --virtual-subnet-cidr=$subnet \\
-    --tun=$tun \\
-    --auth-file=$CREDENTIALS_FILE \\
-    --tls-cert-file $CERTIFICATE_SSL_FILE \\
-    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
-    --stats-file=$STATS_FILE
+ExecStart=$service_command
 Restart=always
 
 [Install]
@@ -888,6 +912,9 @@ show_server_status() {
     local port=$(get_config_value 'PORT')
     local subnet=$(get_config_value 'VIRTUAL_SUBNET_CIDR')
     local tun=$(get_config_value 'TUN_INTERFACE')
+    local auth_mode=$(get_config_value 'AUTH_MODE')
+    auth_mode=${auth_mode:-$AUTH_MODE_FILE}
+    local auth_url=$(get_config_value 'AUTH_URL')
     local token_status=$([ -f "$TOKEN_FILE" ] && echo '✅' || echo '❌')
     
     if is_server_active; then
@@ -899,7 +926,17 @@ show_server_status() {
     echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "${port:-5000}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Sub-rede Virtual: ${BLUE}$(printf '%-40s' "${subnet:-10.10.0.0/16}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Interface TUN: ${BLUE}$(printf '%-43s' "${tun:-tun0}")${BLUE}║${RESET}"
-    echo -e "${BLUE}║${WHITE}  ┗ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
+    
+    local auth_display=""
+    case "$auth_mode" in
+        $AUTH_MODE_FILE) auth_display="Arquivo" ;;
+        $AUTH_MODE_URL) auth_display="URL ($auth_url)" ;;
+        $AUTH_MODE_SSH) auth_display="SSH/PAM" ;; 
+        $AUTH_MODE_NONE) auth_display="Nenhuma" ;;
+        *) auth_display="Arquivo" ;;
+    esac
+    echo -e "${BLUE}║${WHITE}  ┗ Autenticação: ${BLUE}$(printf '%-44s' "$auth_display")${BLUE}║${RESET}"
     
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo
@@ -912,6 +949,236 @@ view_logs() {
     print_info "Exibindo logs (Ctrl+C para sair)..."
     echo
     sudo journalctl -u "$SERVICE_NAME" -f
+    pause
+}
+
+get_auth_flag() {
+    local auth_mode=$(get_config_value "AUTH_MODE")
+    auth_mode=${auth_mode:-$AUTH_MODE_FILE}
+    local auth_url=$(get_config_value "AUTH_URL")
+    
+    case "$auth_mode" in
+        $AUTH_MODE_URL)
+            if [[ -n "$auth_url" ]]; then
+                echo "--auth-url=$auth_url"
+            else
+                echo "--auth-file=$CREDENTIALS_FILE"
+            fi
+            ;;
+        $AUTH_MODE_SSH) 
+            echo "--auth-url=http://127.0.0.1:5001/auth"
+            ;;
+        $AUTH_MODE_FILE)
+            echo "--auth-file=$CREDENTIALS_FILE"
+            ;;
+        $AUTH_MODE_NONE)
+            echo ""
+            ;;
+        *)
+            echo "--auth-file=$CREDENTIALS_FILE"
+            ;;
+    esac
+}
+
+setup_ssh_auth() {
+    print_info "Configurando autenticação SSH/PAM..."
+    
+    local SCRIPT_PATH="/usr/local/bin/ssh_auth.py"
+    local VENV_PATH="/usr/local/bin/ssh_auth_venv"
+    local SERVICE_NAME="ssh-auth-api"
+    local SERVICE_FILE="/etc/systemd/system/ssh-auth-api.service"
+    
+    echo ">>> Atualizando pacotes..."
+    sudo apt update -y
+
+    echo ">>> Instalando dependências..."
+    sudo apt install -y python3 python3-venv python3-pip curl systemd
+
+    echo ">>> Instalando módulo PAM..."
+    if ! sudo apt install -y python3-pam; then
+        echo ">>> Pacote python3-pam não disponível, tentando via pip..."
+        sudo pip3 install python-pam || sudo pip3 install pam
+    fi
+
+    echo ">>> Criando script ssh_auth.py..."
+    sudo tee "$SCRIPT_PATH" > /dev/null << 'EOF'
+import logging
+from flask import Flask, request, jsonify
+import pam
+
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+
+p = pam.pam()
+
+@app.route('/auth', methods=['POST'])
+def auth():
+    if not request.json:
+        return jsonify({'success': False, 'message': 'invalid request'}), 400
+
+    username = request.json.get('username')
+    password = request.json.get('password')
+
+    if not username or not password:
+        return jsonify({'success': False, 'message': 'username and password required'}), 400
+
+    logging.info('Authentication request for user: %s', username)
+
+    try:
+        if p.authenticate(username, password):
+            logging.info('Authentication successful for user: %s', username)
+            return jsonify({'success': True, 'message': 'Authentication successful'}), 200
+        else:
+            logging.info('Authentication failed for user: %s', username)
+            return jsonify({'success': False, 'message': 'invalid credentials'}), 401
+    except Exception as e:
+        logging.error('PAM error: %s', e)
+        return jsonify({'success': False, 'message': 'authentication error'}), 500
+
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=5001, debug=False)
+EOF
+
+    sudo chmod +x "$SCRIPT_PATH"
+
+    echo ">>> Criando ambiente virtual..."
+    sudo python3 -m venv "$VENV_PATH"
+    sudo "$VENV_PATH/bin/pip" install --upgrade pip
+
+    echo ">>> Instalando dependências no ambiente virtual..."
+    sudo "$VENV_PATH/bin/pip" install flask six python-pam || sudo "$VENV_PATH/bin/pip" install flask six pam
+
+    echo ">>> Criando serviço systemd..."
+    sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+[Unit]
+Description=SSH Auth Python Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${VENV_PATH}/bin/python ${SCRIPT_PATH}
+WorkingDirectory=/usr/local/bin
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo ">>> Recarregando e iniciando serviço..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME"
+    sudo systemctl restart "$SERVICE_NAME"
+
+    sleep 2
+    
+    echo ">>> Verificando status do serviço..."
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Serviço SSH Auth API criado e iniciado com sucesso!"
+        print_info "API rodando em: http://127.0.0.1:5001/auth"
+        
+        set_config_value "AUTH_MODE" "$AUTH_MODE_SSH"
+        set_config_value "AUTH_URL" "http://127.0.0.1:5001/auth"
+        
+        print_success "Autenticação SSH/PAM configurada com sucesso!"
+    else
+        print_error "Falha ao iniciar o serviço SSH Auth API."
+        print_info "Verifique os logs: sudo journalctl -u ssh-auth-api -f"
+        return 1
+    fi
+}
+
+change_auth_mode() {
+    print_header
+    
+    local current_mode=$(get_config_value "AUTH_MODE")
+    current_mode=${current_mode:-$AUTH_MODE_FILE}
+    local current_url=$(get_config_value "AUTH_URL")
+    
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}                 ALTERAR MODO DE AUTENTICAÇÃO                 ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local mode_line="${WHITE}  Modo atual: ${GREEN}$current_mode"
+    local mode_padding=$((60 - ${#mode_line} + 22)) 
+    printf "${BLUE}║${mode_line}%${mode_padding}s${BLUE}║${RESET}\n" ""
+    
+    if [[ "$current_mode" == "$AUTH_MODE_URL" && -n "$current_url" ]]; then
+        local url_line="${WHITE}  URL atual: ${CYAN}$current_url"
+        local url_padding=$((60 - ${#url_line} + 22)) 
+        printf "${BLUE}║${url_line}%${url_padding}s${BLUE}║${RESET}\n" ""
+    fi
+    
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    
+    local menu_items=(
+        "1 • Arquivo ($CREDENTIALS_FILE)"
+        "2 • URL personalizada"
+        "3 • SSH (PAM Authentication)" 
+        "4 • Sem autenticação"
+        "0 • Voltar"
+    )
+    
+    for item in "${menu_items[@]}"; do
+        local padding=$((60 - ${#item}))
+        if [[ $item == *"Voltar"* ]]; then
+            printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        else
+            printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+        fi
+    done
+    
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+    
+    local option
+    read -rp "$(echo -e "${BLUE}Selecione uma opção [0-4]:${RESET} ")" option 
+    
+    case "$option" in
+        1)
+            set_config_value "AUTH_MODE" "$AUTH_MODE_FILE"
+            set_config_value "AUTH_URL" ""
+            print_success "Modo de autenticação alterado para: Arquivo"
+            ;;
+        2)
+            echo -e "${BLUE}Digite a URL de autenticação:${RESET}"
+            read -rp "> " auth_url
+            if [[ -n "$auth_url" ]]; then
+                set_config_value "AUTH_MODE" "$AUTH_MODE_URL"
+                set_config_value "AUTH_URL" "$auth_url"
+                print_success "Modo de autenticação alterado para: URL ($auth_url)"
+            else
+                print_error "URL não pode ser vazia!"
+            fi
+            ;;
+        3) 
+            setup_ssh_auth
+            ;;
+        4) 
+            set_config_value "AUTH_MODE" "$AUTH_MODE_NONE"
+            set_config_value "AUTH_URL" ""
+            print_success "Autenticação desativada"
+            ;;
+        0)
+            return
+            ;;
+        *)
+            print_error "Opção inválida!"
+            ;;
+    esac
+    
+    if is_server_active; then
+        echo
+        print_info "Reiniciando serviço para aplicar mudanças..."
+        if create_systemd_service; then
+            sudo systemctl restart "$SERVICE_NAME"
+            print_success "Serviço reiniciado com nova configuração de autenticação!"
+        else
+            print_error "Falha ao atualizar o serviço."
+        fi
+    fi
+    
     pause
 }
 
@@ -1100,6 +1367,7 @@ protocol_main_menu() {
             5) view_logs ;;
             6) change_port ;;
             7) change_token_menu ;;
+            8) change_auth_mode ;; 
             0) return 0 ;;
             *) 
                 print_error "Opção inválida: $option"
@@ -1109,6 +1377,91 @@ protocol_main_menu() {
     done
 }
 
+remove_completely() {
+    print_header
+    
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}║${WHITE}                   ⚠️  REMOÇÃO COMPLETA ⚠️                    ${RED}║${RESET}"
+    echo -e "${RED}║${WHITE}        Esta ação irá remover TODOS os dados e serviços       ${RED}║${RESET}"
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+    echo -e "${YELLOW}Itens que serão removidos:${RESET}"
+    echo -e "${WHITE}  • Serviço DTProto Server${RESET}"
+    echo -e "${WHITE}  • Todos os serviços Proxy ativos${RESET}"
+    echo -e "${WHITE}  • Serviço SSH Auth API${RESET}"
+    echo -e "${WHITE}  • Ambiente virtual SSH Auth${RESET}"
+    echo -e "${WHITE}  • Binários do sistema${RESET}"
+    echo -e "${WHITE}  • Arquivos de configuração${RESET}"
+    echo -e "${WHITE}  • Arquivos de dados e logs${RESET}"
+    echo -e "${WHITE}  • Script de gerenciamento${RESET}"
+    echo
+    
+    if ! confirm_action "${RED}TEM CERTEZA que deseja remover completamente?${RESET}" "n"; then
+        print_info "Remoção cancelada."
+        pause
+        return
+    fi
+    
+    print_info "Iniciando remoção completa..."
+    
+    if is_server_active; then
+        print_info "Parando serviço $SERVICE_NAME..."
+        sudo systemctl stop "$SERVICE_NAME"
+        sudo systemctl disable "$SERVICE_NAME" 2>/dev/null
+    fi
+    
+    print_info "Parando serviço SSH Auth API..."
+    if systemctl is-active --quiet ssh-auth-api; then
+        sudo systemctl stop ssh-auth-api
+        sudo systemctl disable ssh-auth-api 2>/dev/null
+        sudo rm -f "/etc/systemd/system/ssh-auth-api.service"
+    fi
+    
+    print_info "Removendo arquivos SSH Auth API..."
+    sudo rm -f "/usr/local/bin/ssh_auth.py"
+    sudo rm -rf "/usr/local/bin/ssh_auth_venv" 
+    
+    print_info "Parando todos os serviços proxy..."
+    for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
+        if systemctl is-active --quiet "$service"; then
+            sudo systemctl stop "$service"
+        fi
+        sudo systemctl disable "$service" 2>/dev/null
+        sudo rm -f "/etc/systemd/system/$service.service"
+    done
+    
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed
+    
+    print_info "Removendo arquivos de serviço..."
+    sudo rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    
+    print_info "Removendo binários..."
+    sudo rm -f "$PROTO_SERVER_BIN"
+    sudo rm -f "$PROXY_EXECUTABLE"
+    sudo rm -f "$PROTO_MANAGER_SCRIPT"
+    
+    print_info "Removendo configurações e dados..."
+    sudo rm -rf "$(dirname "$TOKEN_FILE")"
+    sudo rm -rf "$(dirname "$CONFIG_FILE")"
+    sudo rm -rf "$DATA_DIR"
+    sudo rm -rf "$PROXY_DIR"
+    sudo rm -rf "$PROXY_LOG_DIR"
+    
+    if [[ -f "/usr/local/bin/proto" ]]; then
+        sudo rm -f "/usr/local/bin/proto"
+    fi
+    
+    print_success "Remoção completa concluída!"
+    echo
+    echo -e "${GREEN}Todos os serviços e arquivos foram removidos com sucesso.${RESET}"
+    echo -e "${YELLOW}O sistema está limpo.${RESET}"
+    echo
+    
+    pause
+    exit 0
+}
+
 initial_menu() {
     while true; do
         print_header
@@ -1116,11 +1469,16 @@ initial_menu() {
         print_initial_menu
         
         local option
-        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-2]:${RESET} ")" option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-3]:${RESET} ")" option
         
         case "$option" in
             1) protocol_main_menu ;;
             2) connection_menu ;;
+            3) remove_completely ;;
+            0) 
+                print_info "Saindo..."
+                exit 0 
+                ;;
             *) 
                 print_error "Opção inválida: $option"
                 pause 
