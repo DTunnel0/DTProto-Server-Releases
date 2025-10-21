@@ -165,6 +165,16 @@ select_version() {
     echo "${versions[$((choice - 1))]}"
 }
 
+configure_sysctl() {
+    print_info "Configurando regras sysctl para otimização de rede..."
+    
+    local sysctl_conf="/etc/sysctl.d/99-dtunnel.conf"
+    echo 'net.ipv4.ip_forward=1' > "$sysctl_conf"
+    
+    sudo sysctl --system > /dev/null
+    print_success "Regras sysctl configuradas e aplicadas."
+}
+
 main() {
     clear
 
@@ -178,6 +188,7 @@ main() {
 
     download_and_install "$PROTO_GITHUB_REPO" "$PROTO_BINARY_NAME_DOWNLOAD" "$PROTO_BINARY_NAME_INSTALL" "$PROTO_VERSION" "$ARCH"
     download_and_install "$PROXY_GITHUB_REPO" "$PROXY_BINARY_NAME_DOWNLOAD" "$PROXY_BINARY_NAME_INSTALL" "$PROXY_VERSION" "$ARCH"
+    configure_sysctl
     download_manager_script
 }
 
