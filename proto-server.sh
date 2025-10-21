@@ -22,9 +22,6 @@ AUTH_MODE_FILE="file"
 AUTH_MODE_URL="url" 
 AUTH_MODE_SSH="ssh"
 AUTH_MODE_NONE="none"
-CURRENT_AUTH_MODE=$(get_config_value "AUTH_MODE")
-CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
-CURRENT_AUTH_URL=$(get_config_value "AUTH_URL")
 
 DEFAULT_BUFFER_SIZE=32768
 DEFAULT_HTTP_RESPONSE="DTunnel"
@@ -656,6 +653,10 @@ validate_token() {
 is_server_active() {
     systemctl is-active "$SERVICE_NAME" &> /dev/null
 }
+
+CURRENT_AUTH_MODE=$(get_config_value "AUTH_MODE")
+CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
+CURRENT_AUTH_URL=$(get_config_value "AUTH_URL")
 
 ensure_data_structure() {
     if [ ! -d "$DATA_DIR" ]; then
