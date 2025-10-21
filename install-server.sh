@@ -2,6 +2,8 @@
 
 set -e
 
+VERSION=1.1.1
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -65,7 +67,7 @@ detect_architecture() {
 print_header() {
   clear
   echo -e "${BLUE}╔════════════════════════════════════════════════════╗"
-  echo -e "║           INSTALADOR DO DT PROTO SERVER            ║"
+  echo -e "║       INSTALADOR DO DT PROTO SERVER v${VERSION}         ║"
   echo -e "╠════════════════════════════════════════════════════╣"
   echo -e "║ Repositório proto: $(printf '%-32s' "$PROTO_GITHUB_REPO")║"
   echo -e "║ Binário do proto: $(printf '%-32s' "$PROTO_BINARY_NAME_INSTALL") ║"
