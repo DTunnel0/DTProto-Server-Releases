@@ -78,7 +78,7 @@ print_status() {
     local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
     local tun=$(get_config_value "TUN_INTERFACE")
     
-    port=${port:-5000}
+    port=${port:-8000}
     subnet=${subnet:-10.10.0.0/16}
     tun=${tun:-tun0}
     
@@ -265,8 +265,8 @@ validate_port() {
         return 1
     fi
     
-    if [[ "$port" -lt 1 || "$port" -gt 65535 ]]; then
-        print_error "Porta deve estar entre 1 e 65535!"
+    if [[ "$port" -lt "$MIN_PORT" || "$port" -gt "$MAX_PORT" ]]; then
+        print_error "Porta deve estar entre $MIN_PORT e $MAX_PORT!"
         return 1
     fi
     
@@ -298,7 +298,7 @@ confirm_action() {
 
 get_proto_port() {
     local proto_port=$(get_config_value "PORT")
-    echo "${proto_port:-5000}"
+    echo "${proto_port:-8000}"
 }
 
 build_proxy_command() {
@@ -705,6 +705,10 @@ create_systemd_service() {
     local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
     local tun=$(get_config_value "TUN_INTERFACE")
     local auth_flag=$(get_auth_flag)
+    local protocol_config=$(get_config_value "PROTOCOL_CONFIG")
+    local client_cleanup=$(get_config_value "CLIENT_CLEANUP_INTERVAL")
+    local client_timeout=$(get_config_value "CLIENT_INACTIVE_TIMEOUT")
+    local tun_buffer=$(get_config_value "TUN_BUFFER_SIZE")
 
     if [ -z "$current_token" ]; then
         print_error "Token não configurado."
@@ -719,12 +723,34 @@ create_systemd_service() {
 
     local service_command="$PROTO_SERVER_BIN \\
     --token=$current_token \\
-    --listen-addr=:$port \\
     --virtual-subnet-cidr=$subnet \\
     --tun=$tun \\
-    --tls-cert-file $CERTIFICATE_SSL_FILE \\
-    --tls-key-file $PRIVATE_KEY_SSL_FILE \\
+    --quic-cert=$CERTIFICATE_SSL_FILE \\
+    --quic-key=$PRIVATE_KEY_SSL_FILE \\
     --stats-file=$STATS_FILE"
+
+    if [[ -n "$protocol_config" ]]; then
+        service_command="$service_command \\
+    --protocol=$protocol_config"
+    else
+        service_command="$service_command \\
+    --protocol=tcp:$port"
+    fi
+
+    if [[ -n "$client_cleanup" ]]; then
+        service_command="$service_command \\
+    --client-cleanup-interval=$client_cleanup"
+    fi
+
+    if [[ -n "$client_timeout" ]]; then
+        service_command="$service_command \\
+    --client-inactive-timeout=$client_timeout"
+    fi
+
+    if [[ -n "$tun_buffer" ]]; then
+        service_command="$service_command \\
+    --tun-buffer-size=$tun_buffer"
+    fi
 
     if [[ -n "$auth_flag" ]]; then
         service_command="$service_command \\
@@ -760,8 +786,9 @@ start_server() {
     local port=$(get_config_value "PORT")
     local subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
     local tun=$(get_config_value "TUN_INTERFACE")
+    local protocol_config=$(get_config_value "PROTOCOL_CONFIG")
 
-    port=${port:-5000}
+    port=${port:-8000}
     subnet=${subnet:-10.10.0.0/16}
     tun=${tun:-tun0}
 
@@ -770,7 +797,10 @@ start_server() {
     echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "$port")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Sub-rede: ${BLUE}$(printf '%-48s' "$subnet")${BLUE}║${RESET}"
-    echo -e "${BLUE}║${WHITE}  ┗ Interface TUN: ${BLUE}$(printf '%-43s' "$tun")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Interface TUN: ${BLUE}$(printf '%-43s' "$tun")${BLUE}║${RESET}"
+    if [[ -n "$protocol_config" ]]; then
+        echo -e "${BLUE}║${WHITE}  ┣ Protocolos: ${BLUE}$(printf '%-46s' "$protocol_config")${BLUE}║${RESET}"
+    fi
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo
 
@@ -852,21 +882,51 @@ start_server() {
         tun="$new_tun_input"
     fi
 
+    echo
+    print_info "Configuração de protocolos:"
+    echo -e "${BLUE}TCP será ativado obrigatoriamente na porta $port${RESET}"
+    
+    local protocol_components="tcp:$port"
+    
+    if confirm_action "Deseja ativar UDP na mesma porta?" "n"; then
+        protocol_components="$protocol_components,udp:$port"
+        print_success "UDP ativado na porta $port"
+    fi
+    
+    if confirm_action "Deseja ativar QUIC?" "n"; then
+        local quic_port
+        while true; do
+            echo -e "${BLUE}Porta para QUIC (Enter para $((port + 1))):${RESET}"
+            read -rp "> " quic_port_input
+            quic_port=${quic_port_input:-$((port + 1))}
+            
+            if validate_port "$quic_port" && check_port_available "$quic_port"; then
+                protocol_components="$protocol_components,quic:$quic_port"
+                print_success "QUIC ativado na porta $quic_port"
+                break
+            else
+                print_warning "Porta QUIC inválida ou indisponível."
+            fi
+        done
+    fi
+
     set_config_value "PORT" "$port"
     set_config_value "VIRTUAL_SUBNET_CIDR" "$subnet"
     set_config_value "TUN_INTERFACE" "$tun"
+    set_config_value "PROTOCOL_CONFIG" "$protocol_components"
     
     print_success "Configurações salvas!"
 
     if create_systemd_service; then
-        print_info "Iniciando servidor na porta $port..."
+        print_info "Iniciando servidor..."
         if sudo systemctl start "$SERVICE_NAME"; then
             sudo systemctl enable "$SERVICE_NAME" &> /dev/null
             print_success "Servidor DTProto iniciado com sucesso!"
             
             sleep 2
             if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
-                print_success "Servidor está ativo e rodando na porta $port"
+                print_success "Servidor está ativo e rodando!"
+                echo -e "${BLUE}Protocolos configurados: $protocol_components${RESET}"
             else
                 print_error "Servidor pode não ter iniciado corretamente."
                 print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
@@ -916,6 +976,7 @@ show_server_status() {
     local auth_mode=$(get_config_value 'AUTH_MODE')
     auth_mode=${auth_mode:-$AUTH_MODE_FILE}
     local auth_url=$(get_config_value 'AUTH_URL')
+    local protocol_config=$(get_config_value 'PROTOCOL_CONFIG')
     local token_status=$([ -f "$TOKEN_FILE" ] && echo '✅' || echo '❌')
     
     if is_server_active; then
@@ -924,9 +985,12 @@ show_server_status() {
         echo -e "${BLUE}║${WHITE}  ┣ Status: ${RED}🔴         ${BLUE}                                       ║${RESET}"
     fi
     
-    echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "${port:-5000}")${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  ┣ Porta: ${BLUE}$(printf '%-51s' "${port:-8000}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Sub-rede Virtual: ${BLUE}$(printf '%-40s' "${subnet:-10.10.0.0/16}")${BLUE}║${RESET}"
     echo -e "${BLUE}║${WHITE}  ┣ Interface TUN: ${BLUE}$(printf '%-43s' "${tun:-tun0}")${BLUE}║${RESET}"
+    if [[ -n "$protocol_config" ]]; then
+        echo -e "${BLUE}║${WHITE}  ┣ Protocolos: ${BLUE}$(printf '%-46s' "$protocol_config")${BLUE}║${RESET}"
+    fi
     echo -e "${BLUE}║${WHITE}  ┣ Token Configurado: ${BLUE}$(printf '%-40s' "$token_status")${BLUE}║${RESET}"
     
     local auth_display=""
@@ -1187,9 +1251,14 @@ change_port() {
     print_header
     
     local current_port=$(get_config_value "PORT")
+    local current_protocol=$(get_config_value "PROTOCOL_CONFIG")
     local is_running=$(is_server_active && echo "true" || echo "false")
 
-    echo -e "${WHITE}Porta atual: ${BLUE}${current_port:-5000}${RESET}"
+    current_port=${current_port:-8000}
+    echo -e "${WHITE}Porta atual: ${BLUE}$current_port${RESET}"
+    if [[ -n "$current_protocol" ]]; then
+        echo -e "${WHITE}Protocolos atuais: ${BLUE}$current_protocol${RESET}"
+    fi
 
     validate_port() {
         local port_num=$1
@@ -1264,18 +1333,41 @@ change_port() {
     echo -e "${YELLOW}Isso afetará todos os clientes conectados.${RESET}"
     
     if confirm_action "Deseja continuar?"; then
+        local new_protocol_config=""
+        
+        if [[ -n "$current_protocol" ]]; then
+            new_protocol_config=$(echo "$current_protocol" | sed "s/tcp:$current_port/tcp:$new_port/g" | sed "s/udp:$current_port/udp:$new_port/g")
+            
+            local quic_port=$(echo "$current_protocol" | grep -o "quic:[0-9]*" | cut -d: -f2)
+            if [[ -n "$quic_port" ]]; then
+                local new_quic_port=$((new_port + 1))
+                if check_port_available "$new_quic_port"; then
+                    new_protocol_config=$(echo "$new_protocol_config" | sed "s/quic:$quic_port/quic:$new_quic_port/g")
+                    print_success "Porta QUIC atualizada para $new_quic_port"
+                else
+                    print_warning "Porta QUIC $new_quic_port indisponível, mantendo configuração anterior"
+                    new_protocol_config=$(echo "$new_protocol_config" | sed "s/quic:$quic_port//g" | sed 's/,,/,/g' | sed 's/^,//' | sed 's/,$//')
+                fi
+            fi
+        else
+            new_protocol_config="tcp:$new_port"
+        fi
+
         set_config_value "PORT" "$new_port"
+        set_config_value "PROTOCOL_CONFIG" "$new_protocol_config"
         print_success "Porta atualizada para $new_port"
+        print_success "Protocolos atualizados: $new_protocol_config"
 
         if [ "$is_running" == "true" ]; then
             print_info "Reiniciando servidor com nova configuração..."
             if create_systemd_service; then
                 if sudo systemctl restart "$SERVICE_NAME"; then
-                    print_success "Servidor reiniciado na porta $new_port!"
+                    print_success "Servidor reiniciado com sucesso!"
                     
                     sleep 2
                     if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
                         print_success "Servidor está ativo e rodando na nova porta $new_port"
+                        echo -e "${BLUE}Protocolos configurados: $new_protocol_config${RESET}"
                     else
                         print_error "Servidor pode não ter reiniciado corretamente."
                         print_info "Verifique os logs: ${BLUE}sudo journalctl -u $SERVICE_NAME -f${RESET}"
