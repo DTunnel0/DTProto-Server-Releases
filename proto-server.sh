@@ -401,6 +401,34 @@ EOF
     return 1
 }
 
+sync_proxy_dtproto_port() {
+    local new_proto_port="$1"
+    local service_file
+    local updated_any="false"
+
+    for service_file in /etc/systemd/system/${PROXY_SERVICE_PREFIX}-*.service; do
+        if [[ ! -f "$service_file" ]]; then
+            continue
+        fi
+
+        if sudo grep -q -- "--dt-proto-port=" "$service_file"; then
+            sudo sed -Ei "s/--dt-proto-port=[0-9]+/--dt-proto-port=$new_proto_port/g" "$service_file"
+            updated_any="true"
+        fi
+    done
+
+    if [[ "$updated_any" == "true" ]]; then
+        sudo systemctl daemon-reload
+
+        local service
+        for service in $(systemctl list-unit-files --type=service --no-legend | awk '{print $1}' | grep "^${PROXY_SERVICE_PREFIX}-.*\\.service$"); do
+            if systemctl is-active --quiet "$service"; then
+                sudo systemctl restart "$service"
+            fi
+        done
+    fi
+}
+
 start_proxy_service() {
     print_header
     
@@ -1467,6 +1495,7 @@ change_port() {
 
         set_config_value "PORT" "$new_port"
         set_config_value "PROTOCOL_CONFIG" "$new_protocol_config"
+        sync_proxy_dtproto_port "$new_port"
         print_success "Porta atualizada para $new_port"
         print_success "Protocolos atualizados: $new_protocol_config"
 
