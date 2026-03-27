@@ -10,6 +10,7 @@ STATS_FILE="$DATA_DIR/stats.json"
 CERTIFICATE_SSL_FILE="$DATA_DIR/cert.pem"
 PRIVATE_KEY_SSL_FILE="$DATA_DIR/key.pem"
 SERVICE_NAME="proto-server"
+FIRST_RUN_MARKER="$DATA_DIR/.quick-setup-done"
 
 PROXY_DIR="/etc/proxy"
 PROXY_TOKEN_FILE="$PROXY_DIR/token"
@@ -284,6 +285,25 @@ check_port_available() {
     return 0
 }
 
+is_port_free() {
+    local port="$1"
+
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tuln | grep -q ":$port "; then
+            return 1
+        fi
+        return 0
+    fi
+
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -tuln | grep -q ":$port "; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 confirm_action() {
     local message="$1"
     local default_answer="${2:-n}"
@@ -330,6 +350,57 @@ build_proxy_command() {
     echo "$command"
 }
 
+start_proxy_for_port() {
+    local port="$1"
+    local ssl_enabled="$2"
+    local ssl_cert_path="$3"
+    local ssh_only_flag="$4"
+    local http_response="$5"
+
+    if ! validate_port "$port"; then
+        return 1
+    fi
+
+    if ! check_port_available "$port"; then
+        return 1
+    fi
+
+    local token
+    token=$(load_token)
+    if [[ -z "$token" ]]; then
+        print_error "Token não configurado. Configure o token primeiro."
+        return 1
+    fi
+
+    local proxy_command
+    proxy_command=$(build_proxy_command "$port" "$token" "$ssl_enabled" "$ssl_cert_path" "$ssh_only_flag" "$http_response")
+
+    local service_name
+    service_name=$(get_proxy_service_name "$port")
+
+    sudo tee "/etc/systemd/system/$service_name.service" > /dev/null <<EOF
+[Unit]
+Description=DTunnel Proxy Server na porta $port
+After=network.target
+
+[Service]
+ExecStart=$proxy_command
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    if sudo systemctl start "$service_name"; then
+        sudo systemctl enable "$service_name" > /dev/null 2>&1
+        return 0
+    fi
+
+    return 1
+}
+
 start_proxy_service() {
     print_header
     
@@ -338,23 +409,6 @@ start_proxy_service() {
     read -rp "> " port
     
     port=$(echo "$port" | tr -d '[:space:]')
-    
-    if ! validate_port "$port"; then
-        pause
-        return
-    fi
-    
-    if ! check_port_available "$port"; then
-        pause
-        return
-    fi
-    
-    local token=$(load_token)
-    if [[ -z "$token" ]]; then
-        print_error "Token não configurado. Configure o token primeiro."
-        pause
-        return
-    fi
     
     local ssl_enabled="false"
     local ssl_cert_path=""
@@ -378,29 +432,7 @@ start_proxy_service() {
     fi
     
     print_info "Iniciando proxy na porta $port..."
-    
-    local proxy_command=$(build_proxy_command "$port" "$token" "$ssl_enabled" "$ssl_cert_path" "$ssh_only_flag" "$http_response")
-    
-    local service_name=$(get_proxy_service_name "$port")
-    
-    sudo tee "/etc/systemd/system/$service_name.service" > /dev/null <<EOF
-[Unit]
-Description=DTunnel Proxy Server na porta $port
-After=network.target
-
-[Service]
-ExecStart=$proxy_command
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    
-    if sudo systemctl start "$service_name"; then
-        sudo systemctl enable "$service_name" > /dev/null 2>&1
+    if start_proxy_for_port "$port" "$ssl_enabled" "$ssl_cert_path" "$ssh_only_flag" "$http_response"; then
         print_success "Proxy iniciado com sucesso na porta $port!"
     else
         print_error "Falha ao iniciar proxy na porta $port"
@@ -659,13 +691,19 @@ CURRENT_AUTH_MODE=${CURRENT_AUTH_MODE:-$AUTH_MODE_FILE}
 CURRENT_AUTH_URL=$(get_config_value "AUTH_URL")
 
 ensure_data_structure() {
+    local quiet_mode="${1:-false}"
+
     if [ ! -d "$DATA_DIR" ]; then
         sudo mkdir -p "$DATA_DIR"
-        print_success "Diretório de dados criado: $DATA_DIR"
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_success "Diretório de dados criado: $DATA_DIR"
+        fi
     fi
 
     if [[ ! -f "$CERTIFICATE_SSL_FILE" ]] || [[ ! -f "$PRIVATE_KEY_SSL_FILE" ]]; then
-        print_info "Generating TLS certificates..."
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_info "Generating TLS certificates..."
+        fi
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$PRIVATE_KEY_SSL_FILE" \
             -out "$CERTIFICATE_SSL_FILE" \
@@ -676,7 +714,9 @@ ensure_data_structure() {
     fi
 
     if [ ! -f "$CREDENTIALS_FILE" ]; then
-        print_info "Criando arquivo de credenciais..."
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_info "Criando arquivo de credenciais..."
+        fi
         sudo cat > "$CREDENTIALS_FILE" <<EOF
 {
   "credentials": [
@@ -688,14 +728,20 @@ ensure_data_structure() {
 }
 EOF
         sudo chmod 644 "$CREDENTIALS_FILE"
-        print_success "Arquivo credentials.json criado com credenciais padrão."
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_success "Arquivo credentials.json criado com credenciais padrão."
+        fi
     fi
 
     if [ ! -f "$STATS_FILE" ]; then
-        print_info "Criando arquivo de estatísticas..."
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_info "Criando arquivo de estatísticas..."
+        fi
         echo "{}" > "$STATS_FILE"
         sudo chmod 644 "$STATS_FILE"
-        print_success "Arquivo stats.json criado."
+        if [[ "$quiet_mode" != "true" ]]; then
+            print_success "Arquivo stats.json criado."
+        fi
     fi
 }
 
@@ -727,6 +773,8 @@ create_systemd_service() {
     --tun=$tun \\
     --quic-cert=$CERTIFICATE_SSL_FILE \\
     --quic-key=$PRIVATE_KEY_SSL_FILE \\
+    --xhttp-cert=$CERTIFICATE_SSL_FILE \\
+    --xhttp-key=$PRIVATE_KEY_SSL_FILE \\
     --stats-file=$STATS_FILE"
 
     if [[ -n "$protocol_config" ]]; then
@@ -893,8 +941,8 @@ start_server() {
         print_success "UDP ativado na porta $port"
     fi
     
+    local quic_port=""
     if confirm_action "Deseja ativar QUIC?" "n"; then
-        local quic_port
         while true; do
             echo -e "${BLUE}Porta para QUIC (Enter para $((port + 1))):${RESET}"
             read -rp "> " quic_port_input
@@ -906,6 +954,26 @@ start_server() {
                 break
             else
                 print_warning "Porta QUIC inválida ou indisponível."
+            fi
+        done
+    fi
+
+    if confirm_action "Deseja ativar XHTTP?" "n"; then
+        local xhttp_default_port=443
+
+        local xhttp_port
+        while true; do
+            echo -e "${BLUE}Porta para XHTTP (Enter para $xhttp_default_port):${RESET}"
+            read -rp "> " xhttp_port_input
+            xhttp_port=${xhttp_port_input:-$xhttp_default_port}
+
+            if validate_port "$xhttp_port" && check_port_available "$xhttp_port"; then
+                protocol_components="$protocol_components,xhttp:$xhttp_port"
+                print_success "XHTTP ativado na porta $xhttp_port"
+                print_info "XHTTP usará o mesmo certificado/chave do QUIC."
+                break
+            else
+                print_warning "Porta XHTTP inválida ou indisponível."
             fi
         done
     fi
@@ -1030,8 +1098,8 @@ get_auth_flag() {
                 echo "--auth-file=$CREDENTIALS_FILE"
             fi
             ;;
-        $AUTH_MODE_SSH) 
-            echo "--auth-url=http://127.0.0.1:5001/auth"
+        $AUTH_MODE_SSH)
+            echo "--auth-url=http://127.0.0.1:6328/auth"
             ;;
         $AUTH_MODE_FILE)
             echo "--auth-file=$CREDENTIALS_FILE"
@@ -1101,7 +1169,7 @@ def auth():
         return jsonify({'success': False, 'message': 'authentication error'}), 500
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5001, debug=False)
+    app.run(host='127.0.0.1', port=6328, debug=False)
 EOF
 
     sudo chmod +x "$SCRIPT_PATH"
@@ -1141,10 +1209,10 @@ EOF
     echo ">>> Verificando status do serviço..."
     if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
         print_success "Serviço SSH Auth API criado e iniciado com sucesso!"
-        print_info "API rodando em: http://127.0.0.1:5001/auth"
+        print_info "API rodando em: http://127.0.0.1:6328/auth"
         
         set_config_value "AUTH_MODE" "$AUTH_MODE_SSH"
-        set_config_value "AUTH_URL" "http://127.0.0.1:5001/auth"
+        set_config_value "AUTH_URL" "http://127.0.0.1:6328/auth"
         
         print_success "Autenticação SSH/PAM configurada com sucesso!"
     else
@@ -1180,7 +1248,7 @@ change_auth_mode() {
     local menu_items=(
         "1 • Arquivo ($CREDENTIALS_FILE)"
         "2 • URL personalizada"
-        "3 • SSH (PAM Authentication)" 
+        "3 • SSH" 
         "4 • Sem autenticação"
         "0 • Voltar"
     )
@@ -1349,6 +1417,50 @@ change_port() {
                     new_protocol_config=$(echo "$new_protocol_config" | sed "s/quic:$quic_port//g" | sed 's/,,/,/g' | sed 's/^,//' | sed 's/,$//')
                 fi
             fi
+
+            local xhttp_port=$(echo "$current_protocol" | grep -o "xhttp:[0-9]*" | cut -d: -f2)
+            if [[ -n "$xhttp_port" ]]; then
+                print_info "XHTTP atual: $xhttp_port (configuração independente)."
+                if confirm_action "Deseja alterar a porta do XHTTP também?" "n"; then
+                    local new_xhttp_port
+                    while true; do
+                        echo -e "${BLUE}Nova porta para XHTTP (Enter para manter [$xhttp_port]):${RESET}"
+                        read -rp "> " new_xhttp_port
+                        new_xhttp_port=${new_xhttp_port:-$xhttp_port}
+                        new_xhttp_port=$(echo "$new_xhttp_port" | tr -d '\000-\037')
+
+                        if [[ "$new_xhttp_port" == "$xhttp_port" ]]; then
+                            print_info "Porta XHTTP mantida em $xhttp_port."
+                            break
+                        fi
+
+                        if ! validate_port "$new_xhttp_port"; then
+                            print_warning "Porta inválida para XHTTP."
+                            continue
+                        fi
+
+                        if [[ "$new_xhttp_port" == "$new_port" ]]; then
+                            print_warning "Porta XHTTP não pode ser igual à porta base TCP/UDP."
+                            continue
+                        fi
+
+                        if [[ -n "$quic_port" && "$new_xhttp_port" == "$new_quic_port" ]]; then
+                            print_warning "Porta XHTTP não pode ser igual à porta QUIC."
+                            continue
+                        fi
+
+                        if check_port_available "$new_xhttp_port"; then
+                            new_protocol_config=$(echo "$new_protocol_config" | sed "s/xhttp:$xhttp_port/xhttp:$new_xhttp_port/g")
+                            print_success "Porta XHTTP atualizada para $new_xhttp_port"
+                            break
+                        else
+                            print_warning "Porta XHTTP indisponível."
+                        fi
+                    done
+                else
+                    print_info "XHTTP mantido na porta $xhttp_port."
+                fi
+            fi
         else
             new_protocol_config="tcp:$new_port"
         fi
@@ -1443,6 +1555,125 @@ check_token_on_startup() {
     fi
 }
 
+run_quick_setup_first_time() {
+    if [[ -f "$FIRST_RUN_MARKER" ]]; then
+        return 0
+    fi
+
+    print_header
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}                  PRIMEIRA EXECUÇÃO DETECTADA                 ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${BLUE}║${WHITE}  Deseja executar a instalação rápida agora?                  ${BLUE}║${RESET}"
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+
+    if ! confirm_action "Executar instalação rápida na primeira execução?" "s"; then
+        sudo mkdir -p "$(dirname "$FIRST_RUN_MARKER")"
+        sudo touch "$FIRST_RUN_MARKER"
+        print_info "Instalação rápida pulada. Indo para o menu inicial..."
+        return 0
+    fi
+
+    print_header
+    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BLUE}║${CYAN}                  INSTALAÇÃO RÁPIDA INICIAL                   ${BLUE}║${RESET}"
+    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${BLUE}║${WHITE}  Esta instalação ativa TCP, UDP, QUIC e XHTTP.               ${BLUE}║${RESET}"
+    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+
+    ensure_data_structure "true"
+    check_or_set_token
+
+    local base_port=8000
+    local quic_port=8001
+    local xhttp_port=443
+    local required_ports=(80 443 8000 8001)
+    local all_ports_free="true"
+
+    print_warning "Antes de continuar, as portas abaixo precisam estar livres e serão ativadas nos seguintes serviços:"
+    echo -e "${WHITE}  • ${CYAN}80${WHITE}   -> DTProxy${RESET}"
+    echo -e "${WHITE}  • ${CYAN}443${WHITE}  -> DTProto XHTTP${RESET}"
+    echo -e "${WHITE}  • ${CYAN}8000${WHITE} -> DTProto TCP/UDP${RESET}"
+    echo -e "${WHITE}  • ${CYAN}8001${WHITE} -> DTProto QUIC${RESET}"
+    echo -e "${BLUE}Status das portas:${RESET}"
+    for port in "${required_ports[@]}"; do
+        if is_port_free "$port"; then
+            echo -e "${WHITE}  • Porta ${CYAN}$port${WHITE}: ${GREEN}LIVRE${RESET}"
+        else
+            echo -e "${WHITE}  • Porta ${CYAN}$port${WHITE}: ${RED}OCUPADA${RESET}"
+            all_ports_free="false"
+        fi
+    done
+    echo
+
+    if [[ "$all_ports_free" != "true" ]]; then
+        print_error "Existem portas ocupadas. Libere todas e execute novamente."
+        pause
+        return 1
+    fi
+
+    if ! confirm_action "Tem certeza que deseja continuar com a instalação rápida automática?" "s"; then
+        print_info "Instalação rápida cancelada."
+        pause
+        return 1
+    fi
+
+    for port in "${required_ports[@]}"; do
+        if ! is_port_free "$port"; then
+            print_error "Porta $port ficou ocupada antes da instalação. Tente novamente."
+            pause
+            return 1
+        fi
+    done
+
+    local subnet
+    local tun
+    subnet=$(get_config_value "VIRTUAL_SUBNET_CIDR")
+    tun=$(get_config_value "TUN_INTERFACE")
+    subnet=${subnet:-10.10.0.0/16}
+    tun=${tun:-tun0}
+
+    local protocol_components="tcp:$base_port,udp:$base_port,quic:$quic_port,xhttp:$xhttp_port"
+    set_config_value "PORT" "$base_port"
+    set_config_value "VIRTUAL_SUBNET_CIDR" "$subnet"
+    set_config_value "TUN_INTERFACE" "$tun"
+    set_config_value "PROTOCOL_CONFIG" "$protocol_components"
+
+    print_info "Aplicando configuração automática..."
+    if create_systemd_service; then
+        if sudo systemctl start "$SERVICE_NAME"; then
+            sudo systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+            print_success "Servidor DTProto iniciado com sucesso!"
+            print_success "Protocolos: $protocol_components"
+        else
+            print_error "Falha ao iniciar o serviço DTProto."
+            print_info "Verifique os logs: sudo journalctl -u $SERVICE_NAME -f"
+            pause
+            return 1
+        fi
+    else
+        print_error "Falha ao criar serviço systemd."
+        pause
+        return 1
+    fi
+
+    init_proxy_dirs
+    print_info "Configurando proxy automático: 80 (sem SSL)..."
+
+    if start_proxy_for_port "80" "false" "" "false" "$DEFAULT_HTTP_RESPONSE"; then
+        print_success "Proxy automático ativo na porta 80 (sem SSL)."
+    else
+        print_warning "Não foi possível ativar proxy automático na porta 80."
+    fi
+
+    sudo mkdir -p "$(dirname "$FIRST_RUN_MARKER")"
+    sudo touch "$FIRST_RUN_MARKER"
+    print_success "Instalação rápida inicial concluída!"
+    pause
+}
+
 protocol_main_menu() {
     while true; do
         print_header
@@ -1502,17 +1733,17 @@ remove_completely() {
         sudo systemctl stop "$SERVICE_NAME"
         sudo systemctl disable "$SERVICE_NAME" 2>/dev/null
     fi
-    
+
     print_info "Parando serviço SSH Auth API..."
     if systemctl is-active --quiet ssh-auth-api; then
         sudo systemctl stop ssh-auth-api
         sudo systemctl disable ssh-auth-api 2>/dev/null
         sudo rm -f "/etc/systemd/system/ssh-auth-api.service"
     fi
-    
+
     print_info "Removendo arquivos SSH Auth API..."
     sudo rm -f "/usr/local/bin/ssh_auth.py"
-    sudo rm -rf "/usr/local/bin/ssh_auth_venv" 
+    sudo rm -rf "/usr/local/bin/ssh_auth_venv"
     
     print_info "Parando todos os serviços proxy..."
     for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
@@ -1587,5 +1818,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 check_token_on_startup
+
+run_quick_setup_first_time
 
 initial_menu
