@@ -374,6 +374,9 @@ start_proxy_for_port() {
 
     local proxy_command
     proxy_command=$(build_proxy_command "$port" "$token" "$ssl_enabled" "$ssl_cert_path" "$ssh_only_flag" "$http_response")
+    if [[ "$proxy_command" != *"--dt-proto-port="* ]]; then
+        proxy_command="$proxy_command --dt-proto-port=$(get_proto_port)"
+    fi
 
     local service_name
     service_name=$(get_proxy_service_name "$port")
@@ -399,6 +402,64 @@ EOF
     fi
 
     return 1
+}
+
+change_proxy_status() {
+    print_header
+
+    local active_ports
+    active_ports=$(list_active_proxies)
+    if [[ -z "$active_ports" ]]; then
+        print_error "Nenhum proxy ativo no momento."
+        pause
+        return
+    fi
+
+    echo -e "${BLUE}Portas ativas: ${GREEN}$active_ports${RESET}"
+    echo -e "${BLUE}Digite a porta para alterar o status/resposta:${RESET}"
+    read -rp "> " port
+    port=$(echo "$port" | tr -d '[:space:]')
+
+    if ! validate_port "$port"; then
+        pause
+        return
+    fi
+
+    local service_name
+    service_name=$(get_proxy_service_name "$port")
+    local service_file="/etc/systemd/system/$service_name.service"
+    if [[ ! -f "$service_file" ]]; then
+        print_error "Serviço não encontrado para a porta $port."
+        pause
+        return
+    fi
+
+    local current_response
+    current_response=$(sudo grep -o -- '--response=[^ ]*' "$service_file" | head -n1 | cut -d= -f2)
+    current_response=${current_response:-$DEFAULT_HTTP_RESPONSE}
+
+    echo -e "${BLUE}Status/Resposta atual: ${GREEN}$current_response${RESET}"
+    echo -e "${BLUE}Novo status/resposta (Enter para manter):${RESET}"
+    read -rp "> " new_response
+    new_response=${new_response:-$current_response}
+    new_response=$(echo "$new_response" | tr -d '[:space:]')
+
+    if [[ -z "$new_response" ]]; then
+        print_error "Status/resposta não pode ser vazio."
+        pause
+        return
+    fi
+
+    sudo sed -Ei "s/--response=[^ ]+/--response=$new_response/g" "$service_file"
+    sudo systemctl daemon-reload
+
+    if sudo systemctl restart "$service_name"; then
+        print_success "Status/resposta da porta $port atualizado para '$new_response'."
+    else
+        print_error "Falha ao reiniciar proxy na porta $port."
+    fi
+
+    pause
 }
 
 sync_proxy_dtproto_port() {
@@ -622,7 +683,8 @@ connection_menu() {
             "1 • Abrir Porta"
             "2 • Fechar Porta"
             "3 • Reiniciar Porta"
-            "4 • Ver Log da Porta"
+            "4 • Alterar Status"
+            "5 • Ver Log da Porta"
             "0 • Voltar ao Menu Inicial"
         )
         
@@ -639,13 +701,14 @@ connection_menu() {
         echo
         
         local choice
-        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-5]:${RESET} ")" choice
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-6]:${RESET} ")" choice
         
         case "$choice" in
             1) start_proxy_service ;;
             2) stop_proxy_service ;;
             3) restart_proxy_service ;;
-            4) show_proxy_logs ;;
+            4) change_proxy_status ;;
+            5) show_proxy_logs ;;
             0) return 0 ;;
             *) 
                 print_error "Opção inválida: $choice"
