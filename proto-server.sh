@@ -11,6 +11,9 @@ CERTIFICATE_SSL_FILE="$DATA_DIR/cert.pem"
 PRIVATE_KEY_SSL_FILE="$DATA_DIR/key.pem"
 SERVICE_NAME="proto-server"
 FIRST_RUN_MARKER="$DATA_DIR/.quick-setup-done"
+ONLINE_API_SERVICE_NAME="proto-online-api"
+ONLINE_API_SCRIPT="/usr/local/bin/proto_online_api.py"
+ONLINE_API_PORT_FILE="/etc/proto-server/online_api_port"
 
 PROXY_DIR="/etc/proxy"
 PROXY_TOKEN_FILE="$PROXY_DIR/token"
@@ -52,6 +55,214 @@ print_header() {
     echo -e "${BLUE}║${GRAY}              Author: Glemison C. DuTra (@DuTra01)            ${BLUE}║"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo
+}
+
+get_online_users_count() {
+    if [[ ! -f "$STATS_FILE" ]]; then
+        echo "0"
+        return
+    fi
+
+    python3 - "$STATS_FILE" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        print(len(data))
+    else:
+        print(0)
+except Exception:
+    print(0)
+PY
+}
+
+is_online_api_active() {
+    systemctl is-active --quiet "$ONLINE_API_SERVICE_NAME"
+}
+
+get_online_api_port() {
+    if [[ -f "$ONLINE_API_PORT_FILE" ]]; then
+        cat "$ONLINE_API_PORT_FILE"
+    else
+        echo ""
+    fi
+}
+
+create_online_api_script() {
+    sudo tee "$ONLINE_API_SCRIPT" > /dev/null <<'PY'
+#!/usr/bin/env python3
+import argparse
+import json
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+def fmt_bytes(value):
+    try:
+        value = float(value)
+    except Exception:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.2f} {unit}"
+        value /= 1024
+
+def fmt_duration(seconds):
+    seconds = max(0, int(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+def load_onlines(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return []
+    except Exception:
+        return []
+
+    rows = []
+    for ip, info in data.items():
+        if not isinstance(info, dict):
+            continue
+        user = info.get("id") or ip
+        up = info.get("traffic_up", 0)
+        down = info.get("traffic_down", 0)
+        connected_at = info.get("connected_at")
+        last_seen_at = info.get("last_seen_at")
+        connected_time = "N/A"
+        if connected_at and last_seen_at:
+            try:
+                c = datetime.strptime(connected_at, "%Y-%m-%d %H:%M:%S")
+                l = datetime.strptime(last_seen_at, "%Y-%m-%d %H:%M:%S")
+                connected_time = fmt_duration((l - c).total_seconds())
+            except Exception:
+                pass
+        rows.append({
+            "user": user,
+            "ip": ip,
+            "traffic_up": fmt_bytes(up),
+            "traffic_down": fmt_bytes(down),
+            "connected_at": connected_at,
+            "last_seen_at": last_seen_at,
+            "connected_time": connected_time
+        })
+    return rows
+
+class Handler(BaseHTTPRequestHandler):
+    stats_file = ""
+    server_version = "DTProtoOnline"
+    sys_version = ""
+
+    def do_GET(self):
+        if self.path != "/onlines":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = json.dumps(load_onlines(self.stats_file), ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _method_not_allowed(self):
+        self.send_response(405)
+        self.send_header("Allow", "GET")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        return
+
+for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"):
+    setattr(Handler, f"do_{method}", Handler._method_not_allowed)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--stats-file", required=True)
+    args = parser.parse_args()
+    Handler.stats_file = args.stats_file
+    HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+
+if __name__ == "__main__":
+    main()
+PY
+    sudo chmod +x "$ONLINE_API_SCRIPT"
+}
+
+activate_online_api() {
+    if is_online_api_active; then
+        print_warning "API já está ativa."
+        pause
+        return
+    fi
+
+    local api_port
+    echo -e "${BLUE}Digite a porta para API de onlines:${RESET}"
+    read -rp "> " api_port
+    api_port=$(echo "$api_port" | tr -d '[:space:]')
+
+    if ! validate_port "$api_port"; then
+        pause
+        return
+    fi
+
+    if ! check_port_available "$api_port"; then
+        pause
+        return
+    fi
+
+    create_online_api_script
+    sudo mkdir -p "$(dirname "$ONLINE_API_PORT_FILE")"
+    echo "$api_port" | sudo tee "$ONLINE_API_PORT_FILE" > /dev/null
+
+    sudo tee "/etc/systemd/system/$ONLINE_API_SERVICE_NAME.service" > /dev/null <<EOF
+[Unit]
+Description=DTProto Online API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 $ONLINE_API_SCRIPT --port=$api_port --stats-file=$STATS_FILE
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    if sudo systemctl start "$ONLINE_API_SERVICE_NAME"; then
+        sudo systemctl enable "$ONLINE_API_SERVICE_NAME" > /dev/null 2>&1
+        print_success "API de onlines ativada na porta $api_port."
+        print_info "JSON: http://SEU_IP:$api_port/onlines"
+    else
+        print_error "Falha ao ativar API de onlines."
+    fi
+    pause
+}
+
+deactivate_online_api() {
+    if ! is_online_api_active; then
+        print_warning "API já está desativada."
+        pause
+        return
+    fi
+
+    sudo systemctl stop "$ONLINE_API_SERVICE_NAME"
+    sudo systemctl disable "$ONLINE_API_SERVICE_NAME" > /dev/null 2>&1
+    sudo rm -f "/etc/systemd/system/$ONLINE_API_SERVICE_NAME.service"
+    sudo systemctl daemon-reload
+    print_success "API de onlines desativada."
+    pause
 }
 
 print_status() {
@@ -129,7 +340,8 @@ print_initial_menu() {
     local menu_items=(
         "1 • Menu Principal do Protocolo"
         "2 • Menu de Conexão"
-        "3 • Remover Script"
+        "3 • Usuarios Online"
+        "4 • Remover Script"
         "0 • Sair"
     )
     
@@ -653,7 +865,7 @@ show_proxy_logs() {
         clear
         sudo cat "$log_file"
         echo -e "\n${YELLOW}Pressione Ctrl+C para retornar ao menu.${RESET}"
-        sleep 1
+        sleep 5
     done
     trap - INT
     
@@ -1793,6 +2005,160 @@ protocol_main_menu() {
     done
 }
 
+show_online_users_details() {
+    while :; do
+        print_header
+
+        local online_count
+        online_count=$(get_online_users_count)
+
+        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+        local online_title="USUARIOS ONLINE (${online_count})"
+        local online_title_padding=$((60 - ${#online_title}))
+        printf "${BLUE}║${CYAN}  ${online_title}%${online_title_padding}s${BLUE}║${RESET}\n" ""
+        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+        echo
+
+        python3 - "$STATS_FILE" <<'PY'
+import json
+import sys
+from datetime import datetime
+
+path = sys.argv[1]
+
+def fmt_bytes(value):
+    try:
+        value = float(value)
+    except Exception:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    return f"{value:.2f} {units[idx]}"
+
+def fmt_duration(seconds):
+    seconds = max(0, int(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+
+if not isinstance(data, dict) or not data:
+    print("Nenhum usuario online.")
+    sys.exit(0)
+
+for ip, info in data.items():
+    if not isinstance(info, dict):
+        continue
+    user = info.get("id") or ip
+    up = fmt_bytes(info.get("traffic_up", 0))
+    down = fmt_bytes(info.get("traffic_down", 0))
+    connected_at = info.get("connected_at")
+    last_seen_at = info.get("last_seen_at")
+    elapsed = "N/A"
+    if connected_at and last_seen_at:
+        try:
+            c = datetime.strptime(connected_at, "%Y-%m-%d %H:%M:%S")
+            l = datetime.strptime(last_seen_at, "%Y-%m-%d %H:%M:%S")
+            elapsed = fmt_duration((l - c).total_seconds())
+        except Exception:
+            pass
+
+    print(f"Usuário: {user}")
+    print(f"IP: {ip}")
+    print(f"Tráfego Up: {up}")
+    print(f"Tráfego Down: {down}")
+    print(f"Tempo conectado: {elapsed}")
+    print("-" * 62)
+PY
+        echo
+        echo -e "${YELLOW}Pressione Enter para voltar.${RESET}"
+        if read -r -t 5; then
+            break
+        fi
+    done
+}
+
+online_users_menu() {
+    while true; do
+        print_header
+
+        local api_status="OFFLINE"
+        local api_port
+        api_port=$(get_online_api_port)
+        local online_count
+        online_count=$(get_online_users_count)
+
+        if is_online_api_active; then
+            api_status="ONLINE"
+        fi
+
+        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+        echo -e "${BLUE}║${WHITE}                     PAINEL DE ONLINES                        ${BLUE}║${RESET}"
+        echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+        local status_line=" Api status: $api_status"
+        local status_fill=$((62 - ${#status_line}))
+        printf "${BLUE}║${WHITE}%s%${status_fill}s${BLUE}║${RESET}\n" "$status_line" ""
+        if [[ -n "$api_port" ]]; then
+            local port_line=" Api porta: $api_port"
+            local port_fill=$((62 - ${#port_line}))
+            printf "${BLUE}║${WHITE}%s%${port_fill}s${BLUE}║${RESET}\n" "$port_line" ""
+        fi
+        local online_line=" Usuarios online: $online_count"
+        local online_fill=$((62 - ${#online_line}))
+        printf "${BLUE}║${WHITE}%s%${online_fill}s${BLUE}║${RESET}\n" "$online_line" ""
+        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+        echo
+
+        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
+        echo -e "${BLUE}║${WHITE}                           MENU                               ${BLUE}║${RESET}"
+        echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
+        local menu_items=("1 • Listar Onlines")
+        if is_online_api_active; then
+            menu_items+=("2 • Desativar API")
+        else
+            menu_items+=("2 • Ativar API")
+        fi
+        menu_items+=("0 • Voltar")
+        for item in "${menu_items[@]}"; do
+            local padding=$((60 - ${#item}))
+            if [[ $item == 0* ]]; then
+                printf "${BLUE}║${RED}  [${item%% *}] ${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+            else
+                printf "${BLUE}║${WHITE}  [${CYAN}${item%% *}${WHITE}] ${BLUE}${item#* • }%${padding}s${BLUE}║${RESET}\n" ""
+            fi
+        done
+        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
+        echo
+
+        local option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [0-2]:${RESET} ")" option
+        case "$option" in
+            1) show_online_users_details ;;
+            2)
+                if is_online_api_active; then
+                    deactivate_online_api
+                else
+                    activate_online_api
+                fi
+                ;;
+            0) return 0 ;;
+            *)
+                print_error "Opção inválida: $option"
+                pause
+                ;;
+        esac
+    done
+}
+
 remove_completely() {
     print_header
     
@@ -1806,6 +2172,7 @@ remove_completely() {
     echo -e "${WHITE}  • Todos os serviços Proxy ativos${RESET}"
     echo -e "${WHITE}  • Serviço SSH Auth API${RESET}"
     echo -e "${WHITE}  • Ambiente virtual SSH Auth${RESET}"
+    echo -e "${WHITE}  • Serviço Online API${RESET}"
     echo -e "${WHITE}  • Binários do sistema${RESET}"
     echo -e "${WHITE}  • Arquivos de configuração${RESET}"
     echo -e "${WHITE}  • Arquivos de dados e logs${RESET}"
@@ -1836,6 +2203,15 @@ remove_completely() {
     print_info "Removendo arquivos SSH Auth API..."
     sudo rm -f "/usr/local/bin/ssh_auth.py"
     sudo rm -rf "/usr/local/bin/ssh_auth_venv"
+
+    print_info "Parando serviço Online API..."
+    if systemctl is-active --quiet "$ONLINE_API_SERVICE_NAME"; then
+        sudo systemctl stop "$ONLINE_API_SERVICE_NAME"
+    fi
+    sudo systemctl disable "$ONLINE_API_SERVICE_NAME" 2>/dev/null
+    sudo rm -f "/etc/systemd/system/$ONLINE_API_SERVICE_NAME.service"
+    sudo rm -f "$ONLINE_API_SCRIPT"
+    sudo rm -f "$ONLINE_API_PORT_FILE"
     
     print_info "Parando todos os serviços proxy..."
     for service in $(systemctl list-units --type=service --no-legend | grep "$PROXY_SERVICE_PREFIX" | awk '{print $1}'); do
@@ -1885,12 +2261,13 @@ initial_menu() {
         print_initial_menu
         
         local option
-        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-3]:${RESET} ")" option
+        read -rp "$(echo -e "${BLUE}Selecione uma opção [1-4]:${RESET} ")" option
         
         case "$option" in
             1) protocol_main_menu ;;
             2) connection_menu ;;
-            3) remove_completely ;;
+            3) online_users_menu ;;
+            4) remove_completely ;;
             0) 
                 print_info "Saindo..."
                 exit 0 
