@@ -11,6 +11,7 @@ CERTIFICATE_SSL_FILE="$DATA_DIR/cert.pem"
 PRIVATE_KEY_SSL_FILE="$DATA_DIR/key.pem"
 SERVICE_NAME="proto-server"
 FIRST_RUN_MARKER="$DATA_DIR/.quick-setup-done"
+QUICK_SETUP_ASKED_KEY="QUICK_SETUP_ASKED"
 ONLINE_API_SERVICE_NAME="proto-online-api"
 ONLINE_API_SCRIPT="/usr/local/bin/proto_online_api.py"
 ONLINE_API_PORT_FILE="/etc/proto-server/online_api_port"
@@ -531,6 +532,27 @@ confirm_action() {
 get_proto_port() {
     local proto_port=$(get_config_value "PORT")
     echo "${proto_port:-8000}"
+}
+
+normalize_protocol_config() {
+    local input="$1"
+    local output=""
+    local part
+
+    IFS=',' read -ra parts <<< "$input"
+    for part in "${parts[@]}"; do
+        case "$part" in
+            tcp:*|udp:*|quic:*)
+                if [[ -n "$output" ]]; then
+                    output="$output,$part"
+                else
+                    output="$part"
+                fi
+                ;;
+        esac
+    done
+
+    echo "$output"
 }
 
 build_proxy_command() {
@@ -1070,14 +1092,14 @@ create_systemd_service() {
 
     print_info "Criando serviço systemd..."
 
+    protocol_config=$(normalize_protocol_config "$protocol_config")
+
     local service_command="$PROTO_SERVER_BIN \\
     --token=$current_token \\
     --virtual-subnet-cidr=$subnet \\
     --tun=$tun \\
     --quic-cert=$CERTIFICATE_SSL_FILE \\
     --quic-key=$PRIVATE_KEY_SSL_FILE \\
-    --xhttp-cert=$CERTIFICATE_SSL_FILE \\
-    --xhttp-key=$PRIVATE_KEY_SSL_FILE \\
     --stats-file=$STATS_FILE"
 
     if [[ -n "$protocol_config" ]]; then
@@ -1257,26 +1279,6 @@ start_server() {
                 break
             else
                 print_warning "Porta QUIC inválida ou indisponível."
-            fi
-        done
-    fi
-
-    if confirm_action "Deseja ativar XHTTP?" "n"; then
-        local xhttp_default_port=443
-
-        local xhttp_port
-        while true; do
-            echo -e "${BLUE}Porta para XHTTP (Enter para $xhttp_default_port):${RESET}"
-            read -rp "> " xhttp_port_input
-            xhttp_port=${xhttp_port_input:-$xhttp_default_port}
-
-            if validate_port "$xhttp_port" && check_port_available "$xhttp_port"; then
-                protocol_components="$protocol_components,xhttp:$xhttp_port"
-                print_success "XHTTP ativado na porta $xhttp_port"
-                print_info "XHTTP usará o mesmo certificado/chave do QUIC."
-                break
-            else
-                print_warning "Porta XHTTP inválida ou indisponível."
             fi
         done
     fi
@@ -1721,49 +1723,7 @@ change_port() {
                 fi
             fi
 
-            local xhttp_port=$(echo "$current_protocol" | grep -o "xhttp:[0-9]*" | cut -d: -f2)
-            if [[ -n "$xhttp_port" ]]; then
-                print_info "XHTTP atual: $xhttp_port (configuração independente)."
-                if confirm_action "Deseja alterar a porta do XHTTP também?" "n"; then
-                    local new_xhttp_port
-                    while true; do
-                        echo -e "${BLUE}Nova porta para XHTTP (Enter para manter [$xhttp_port]):${RESET}"
-                        read -rp "> " new_xhttp_port
-                        new_xhttp_port=${new_xhttp_port:-$xhttp_port}
-                        new_xhttp_port=$(echo "$new_xhttp_port" | tr -d '\000-\037')
-
-                        if [[ "$new_xhttp_port" == "$xhttp_port" ]]; then
-                            print_info "Porta XHTTP mantida em $xhttp_port."
-                            break
-                        fi
-
-                        if ! validate_port "$new_xhttp_port"; then
-                            print_warning "Porta inválida para XHTTP."
-                            continue
-                        fi
-
-                        if [[ "$new_xhttp_port" == "$new_port" ]]; then
-                            print_warning "Porta XHTTP não pode ser igual à porta base TCP/UDP."
-                            continue
-                        fi
-
-                        if [[ -n "$quic_port" && "$new_xhttp_port" == "$new_quic_port" ]]; then
-                            print_warning "Porta XHTTP não pode ser igual à porta QUIC."
-                            continue
-                        fi
-
-                        if check_port_available "$new_xhttp_port"; then
-                            new_protocol_config=$(echo "$new_protocol_config" | sed "s/xhttp:$xhttp_port/xhttp:$new_xhttp_port/g")
-                            print_success "Porta XHTTP atualizada para $new_xhttp_port"
-                            break
-                        else
-                            print_warning "Porta XHTTP indisponível."
-                        fi
-                    done
-                else
-                    print_info "XHTTP mantido na porta $xhttp_port."
-                fi
-            fi
+            new_protocol_config=$(normalize_protocol_config "$new_protocol_config")
         else
             new_protocol_config="tcp:$new_port"
         fi
@@ -1860,7 +1820,7 @@ check_token_on_startup() {
 }
 
 run_quick_setup_first_time() {
-    if [[ -f "$FIRST_RUN_MARKER" ]]; then
+    if [[ -f "$FIRST_RUN_MARKER" ]] || [[ "$(get_config_value "$QUICK_SETUP_ASKED_KEY")" == "true" ]]; then
         return 0
     fi
 
@@ -1873,6 +1833,7 @@ run_quick_setup_first_time() {
     echo
 
     if ! confirm_action "Executar instalação rápida na primeira execução?" "s"; then
+        set_config_value "$QUICK_SETUP_ASKED_KEY" "true"
         sudo mkdir -p "$(dirname "$FIRST_RUN_MARKER")"
         sudo touch "$FIRST_RUN_MARKER"
         print_info "Instalação rápida pulada. Indo para o menu inicial..."
@@ -1883,7 +1844,7 @@ run_quick_setup_first_time() {
     echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${RESET}"
     echo -e "${BLUE}║${CYAN}                  INSTALAÇÃO RÁPIDA INICIAL                   ${BLUE}║${RESET}"
     echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${RESET}"
-    echo -e "${BLUE}║${WHITE}  Esta instalação ativa TCP, UDP, QUIC e XHTTP.               ${BLUE}║${RESET}"
+    echo -e "${BLUE}║${WHITE}  Esta instalação ativa TCP, UDP e QUIC.                      ${BLUE}║${RESET}"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${RESET}"
     echo
 
@@ -1892,13 +1853,12 @@ run_quick_setup_first_time() {
 
     local base_port=8000
     local quic_port=8001
-    local xhttp_port=443
     local required_ports=(80 443 8000 8001)
     local all_ports_free="true"
 
     print_warning "Antes de continuar, as portas abaixo precisam estar livres e serão ativadas nos seguintes serviços:"
     echo -e "${WHITE}  • ${CYAN}80${WHITE}   -> DTProxy${RESET}"
-    echo -e "${WHITE}  • ${CYAN}443${WHITE}  -> DTProto XHTTP${RESET}"
+    echo -e "${WHITE}  • ${CYAN}443${WHITE}  -> DTProxy SSL${RESET}"
     echo -e "${WHITE}  • ${CYAN}8000${WHITE} -> DTProto TCP/UDP${RESET}"
     echo -e "${WHITE}  • ${CYAN}8001${WHITE} -> DTProto QUIC${RESET}"
     echo -e "${BLUE}Status das portas:${RESET}"
@@ -1939,7 +1899,7 @@ run_quick_setup_first_time() {
     subnet=${subnet:-10.10.0.0/16}
     tun=${tun:-tun0}
 
-    local protocol_components="tcp:$base_port,udp:$base_port,quic:$quic_port,xhttp:$xhttp_port"
+    local protocol_components="tcp:$base_port,udp:$base_port,quic:$quic_port"
     set_config_value "PORT" "$base_port"
     set_config_value "VIRTUAL_SUBNET_CIDR" "$subnet"
     set_config_value "TUN_INTERFACE" "$tun"
@@ -1964,7 +1924,7 @@ run_quick_setup_first_time() {
     fi
 
     init_proxy_dirs
-    print_info "Configurando proxy automático: 80 (sem SSL)..."
+    print_info "Configurando proxies automáticos: 80 (sem SSL) e 443 (com SSL)..."
 
     if start_proxy_for_port "80" "false" "" "false" "$DEFAULT_HTTP_RESPONSE"; then
         print_success "Proxy automático ativo na porta 80 (sem SSL)."
@@ -1972,6 +1932,13 @@ run_quick_setup_first_time() {
         print_warning "Não foi possível ativar proxy automático na porta 80."
     fi
 
+    if start_proxy_for_port "443" "true" "" "false" "$DEFAULT_HTTP_RESPONSE"; then
+        print_success "Proxy automático ativo na porta 443 (com SSL)."
+    else
+        print_warning "Não foi possível ativar proxy automático na porta 443."
+    fi
+
+    set_config_value "$QUICK_SETUP_ASKED_KEY" "true"
     sudo mkdir -p "$(dirname "$FIRST_RUN_MARKER")"
     sudo touch "$FIRST_RUN_MARKER"
     print_success "Instalação rápida inicial concluída!"
