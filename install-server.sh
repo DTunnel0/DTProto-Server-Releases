@@ -150,18 +150,13 @@ select_version() {
         printf "${BLUE}║${NC} ${YELLOW}[%02d]${NC} %-45s ${BLUE}║${NC}\n" "$i" "$v" >&2
         i=$((i + 1))
     done
-    printf "${BLUE}║${NC} ${YELLOW}[00]${NC} ${RED}Última versão (recomendado)                   ${BLUE}║${NC}\n" >&2
     echo -e "${BLUE}╚════════════════════════════════════════════════════╝${NC}" >&2
     echo -ne "${BLUE}👉 Escolha uma versão: ${NC}" >&2
     read -r choice
 
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 0 || choice > ${#versions[@]} )); then
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#versions[@]} )); then
         print_error "Opção inválida. Saindo." >&2
         exit 1
-    fi
-
-    if [[ "$choice" -eq 0 ]]; then
-        choice=${#versions[@]}
     fi
 
     echo "${versions[$((choice - 1))]}"
