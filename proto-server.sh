@@ -45,10 +45,11 @@ read_input() {
     if [[ -n "$default_value" ]]; then
         read -rp "$(format_prompt "$prompt_text") [$default_value]: " value
         echo "${value:-$default_value}"
-    else
-        read -rp "$(format_prompt "$prompt_text"): " value
-        echo "$value"
+        return
     fi
+
+    read -rp "$(format_prompt "$prompt_text"): " value
+    echo "$value"
 }
 
 wait_for_enter() {
@@ -75,7 +76,9 @@ center_text() {
   local vlen
   vlen=$(visible_len "$text")
   local pad=$(( (width - vlen) / 2 ))
-  if (( pad < 0 )); then pad=0; fi
+  if (( pad < 0 )); then
+    pad=0
+  fi
   printf "%*s%s" $pad "" "$text"
 }
 
@@ -85,7 +88,9 @@ draw_box_line() {
   local vlen
   vlen=$(visible_len "${content}")
   local pad=$(( width - vlen ))
-  if (( pad < 0 )); then pad=0; fi
+  if (( pad < 0 )); then
+    pad=0
+  fi
   local spaces
   spaces=$(printf '%*s' "${pad}" '')
 
@@ -103,12 +108,16 @@ draw_two_column_line() {
   right_vlen=$(visible_len "${right_str}")
 
   local left_pad=$(( col_width - left_vlen ))
-  if (( left_pad < 0 )); then left_pad=0; fi
+  if (( left_pad < 0 )); then
+    left_pad=0
+  fi
   local left_spaces
   left_spaces=$(printf '%*s' "${left_pad}" '')
 
   local right_pad=$(( col_width - right_vlen ))
-  if (( right_pad < 0 )); then right_pad=0; fi
+  if (( right_pad < 0 )); then
+    right_pad=0
+  fi
   local right_spaces
   right_spaces=$(printf '%*s' "${right_pad}" '')
 
@@ -164,14 +173,18 @@ format_option_str() {
 }
 
 get_installed_version() {
-  if [[ -x "${BINARY_PATH}" ]]; then
-    local ver
-    ver=$("${BINARY_PATH}" -v 2>/dev/null | awk '{print $NF}' | sed 's/^v//i' || true)
-    if [[ -n "${ver}" ]]; then
-      echo "v${ver}"
-      return
-    fi
+  if [[ ! -x "${BINARY_PATH}" ]]; then
+    echo "v3.0.0"
+    return
   fi
+
+  local ver
+  ver=$("${BINARY_PATH}" -v 2>/dev/null | awk '{print $NF}' | sed 's/^v//i' || true)
+  if [[ -n "${ver}" ]]; then
+    echo "v${ver}"
+    return
+  fi
+
   echo "v3.0.0"
 }
 
@@ -180,66 +193,38 @@ get_online_users() {
     echo "0"
     return
   fi
-
-  python3 -c "
-import json
-try:
-    with open('${STATS_FILE}', 'r') as f:
-        data = json.load(f)
-    print(len(data) if isinstance(data, dict) else 0)
-except Exception:
-    print(0)
-" 2>/dev/null || echo "0"
+  jq 'if type == "object" then length else 0 end' "${STATS_FILE}" 2>/dev/null || echo "0"
 }
 
 get_service_status() {
   if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
     echo -e "${COLORS[SUCCESS]}EM EXECUÇÃO (ONLINE)${COLORS[RESET]}"
-  else
-    echo -e "${COLORS[ERROR]}DESLIGADO (OFFLINE)${COLORS[RESET]}"
+    return
   fi
+
+  echo -e "${COLORS[ERROR]}DESLIGADO (OFFLINE)${COLORS[RESET]}"
 }
 
 get_config_value() {
-  local key=$1
+  local key="$1"
   if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo ""
     return
   fi
 
-  python3 -c "
-import json
-try:
-    with open('${CONFIG_FILE}', 'r') as f:
-        data = json.load(f)
+  if [[ "${key}" == "proxy.listen" ]]; then
+    jq -r '.proxy.listen // .proxy.ports // [] | map(if type == "object" then (if .ssl then "ssl:" else "" end) + (.port | tostring) else tostring end) | join(",")' "${CONFIG_FILE}" 2>/dev/null || echo ""
+    return
+  fi
 
-    if '${key}' in ['proxy.listen', 'proxy.listener', 'proxy.listeners', 'proxy.ports']:
-        proxy = data.get('proxy', {})
-        items = proxy.get('listen', []) or proxy.get('listener', []) or proxy.get('listeners', []) or proxy.get('ports', [])
-        out = []
-        for item in items:
-            if isinstance(item, dict):
-                p = item.get('port', '')
-                ssl = item.get('ssl', False)
-                prefix = 'ssl:' if ssl else ''
-                out.append(f'{prefix}{p}')
-            else:
-                out.append(str(item))
-        print(','.join(out))
-    else:
-        keys = '${key}'.split('.')
-        val = data
-        for k in keys:
-            val = val.get(k, {})
-        if isinstance(val, list):
-            print(','.join(map(str, val)))
-        elif not isinstance(val, dict):
-            print(val)
-        else:
-            print('')
-except Exception:
-    print('')
-" 2>/dev/null || echo ""
+  local val
+  val=$(jq -r ".${key} // empty" "${CONFIG_FILE}" 2>/dev/null || echo "")
+  if [[ -z "${val}" || "${val}" == "null" ]]; then
+    echo ""
+    return
+  fi
+
+  echo "${val}"
 }
 
 get_auth_description() {
@@ -248,41 +233,31 @@ get_auth_description() {
     return
   fi
 
-  python3 -c "
-import json
-try:
-    with open('${CONFIG_FILE}', 'r') as f:
-        data = json.load(f)
-    auth = data.get('server', {}).get('auth', {})
-    if auth.get('url'):
-        print(f'API WEB ({auth[\"url\"]})')
-    elif auth.get('file'):
-        print(f'Arquivo ({auth[\"file\"]})')
-    else:
-        print('Usuários do Sistema')
-except Exception:
-    print('Usuários do Sistema')
-" 2>/dev/null || echo "Usuários do Sistema"
+  local url file
+  url=$(jq -r '.server.auth.url // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+  if [[ -n "${url}" && "${url}" != "null" ]]; then
+    echo "API WEB (${url})"
+    return
+  fi
+
+  file=$(jq -r '.server.auth.file // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+  if [[ -n "${file}" && "${file}" != "null" ]]; then
+    echo "Arquivo (${file})"
+    return
+  fi
+
+  echo "Usuários do Sistema"
 }
 
 save_token_to_config() {
-  local new_token=$1
-  python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    data.setdefault('server', {})['token'] = '${new_token}'.strip()
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao salvar token: {e}')
-"
+  local new_token="$1"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg token "${new_token}" '.server.token = $token' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
 }
 
 validate_token_with_binary() {
-  local token=$1
+  local token="$1"
   if [[ -z "${token}" ]]; then
     return 1
   fi
@@ -291,12 +266,11 @@ validate_token_with_binary() {
     return 0
   fi
 
-  if [[ -x "${BINARY_PATH}" ]]; then
-    "${BINARY_PATH}" --validate --token "${token}" >/dev/null 2>&1
-    return $?
+  if [[ ! -x "${BINARY_PATH}" ]]; then
+    return 0
   fi
 
-  return 0
+  "${BINARY_PATH}" --validate --token "${token}" >/dev/null 2>&1
 }
 
 ensure_valid_token() {
@@ -311,7 +285,8 @@ ensure_valid_token() {
   draw_header "VALIDAÇÃO DO TOKEN DE ACESSO" "Autenticação Obrigatória"
   if [[ -z "${token}" ]]; then
     draw_box_line "${COLORS[WARN]}Nenhum Token encontrado na configuração.${COLORS[RESET]}"
-  else
+  fi
+  if [[ -n "${token}" ]]; then
     draw_box_line "${COLORS[ERROR]}O Token cadastrado é inválido ou expirou.${COLORS[RESET]}"
   fi
   draw_footer
@@ -332,11 +307,11 @@ ensure_valid_token() {
       systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
       print_message "SUCCESS" "Token validado e salvo em ${CONFIG_FILE}!"
       sleep 1.5
-      break
-    else
-      print_message "ERROR" "Token inválido. Por favor, forneça um token válido."
-      echo ""
+      return 0
     fi
+
+    print_message "ERROR" "Token inválido. Por favor, forneça um token válido."
+    echo ""
   done
 }
 
@@ -347,7 +322,9 @@ display_main_menu() {
   online_users=$(get_online_users)
   proxy_ports=$(get_config_value "proxy.listen")
 
-  if [[ -z "${proxy_ports}" ]]; then proxy_ports="Nenhuma"; fi
+  if [[ -z "${proxy_ports}" ]]; then
+    proxy_ports="Nenhuma"
+  fi
 
   draw_header "DTPROTO SERVER MANAGER • ${version}"
   draw_box_line "Status:      ${status}"
@@ -425,11 +402,10 @@ add_port_flow() {
   print_message "INFO" "Configuração de Porta do Proxy"
   echo ""
 
-  local host
+  local host port ssl_choice is_ssl custom_msg custom_ssh_port ssh_choice is_ssh_only custom_buf custom_cert
   host=$(read_input "Digite o Host de escuta" "0.0.0.0")
   host=$(echo "${host}" | xargs)
 
-  local port
   while true; do
     port=$(read_input "Digite o número da porta (ex: 8080, 8443)")
     port=$(echo "${port}" | xargs)
@@ -440,7 +416,7 @@ add_port_flow() {
   done
 
   read -rp "$(format_prompt "Habilitar SSL/TLS nesta porta?") (s/n) [n]: " ssl_choice
-  local is_ssl=false
+  is_ssl=false
   if [[ "${ssl_choice,,}" =~ ^(s|sim)$ ]]; then
     is_ssl=true
   fi
@@ -452,7 +428,7 @@ add_port_flow() {
   custom_ssh_port=$(echo "${custom_ssh_port}" | xargs)
 
   read -rp "$(format_prompt "Restringir a Somente SSH?") (s/n) [n]: " ssh_choice
-  local is_ssh_only=false
+  is_ssh_only=false
   if [[ "${ssh_choice,,}" =~ ^(s|sim)$ ]]; then
     is_ssh_only=true
   fi
@@ -463,96 +439,49 @@ add_port_flow() {
   read -rp "$(format_prompt "Certificado SSL (.pem/.crt)") [Enter para interno/padrão]: " custom_cert
   custom_cert=$(echo "${custom_cert}" | xargs)
 
-  python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    proxy = data.setdefault('proxy', {})
-    listeners = proxy.get('listen', []) or proxy.get('listener', []) or proxy.get('listeners', []) or proxy.get('ports', [])
-
-    host_val = '${host}'.strip() or '0.0.0.0'
-    port_num = int('${port}')
-    is_ssl = '${is_ssl}'.lower() == 'true'
-    msg = '${custom_msg}'.strip()
-    ssh_p = '${custom_ssh_port}'.strip()
-    ssh_only = '${is_ssh_only}'.lower() == 'true'
-    buf_size = '${custom_buf}'.strip()
-    cert = '${custom_cert}'.strip()
-
-    new_listeners = []
-    for item in listeners:
-        p_num = None
-        if isinstance(item, dict):
-            p_num = item.get('port')
-        elif isinstance(item, str):
-            clean_p = item.split(':')[-1]
-            if clean_p.isdigit():
-                p_num = int(clean_p)
-
-        if p_num != port_num:
-            new_listeners.append(item)
-
-    obj = {
-        'host': host_val,
-        'port': port_num,
-        'ssl': is_ssl
+  local obj
+  obj=$(jq -n \
+    --arg host "${host:-0.0.0.0}" \
+    --argjson port "${port}" \
+    --argjson ssl "${is_ssl}" \
+    --arg msg "${custom_msg}" \
+    --arg ssh_port "${custom_ssh_port}" \
+    --argjson ssh_only "${is_ssh_only}" \
+    --arg buf "${custom_buf}" \
+    --arg cert "${custom_cert}" \
+    '{
+      host: $host,
+      port: $port,
+      ssl: $ssl
     }
-    if msg:
-        obj['message'] = msg
-    if ssh_p.isdigit():
-        obj['ssh_port'] = int(ssh_p)
-    if ssh_only:
-        obj['ssh_only'] = True
-    if buf_size.isdigit():
-        obj['buffer_size'] = int(buf_size)
-    if cert:
-        obj['cert_file'] = cert
+    + (if $msg != "" then {message: $msg} else {} end)
+    + (if $ssh_port != "" and ($ssh_port | test("^[0-9]+$")) then {ssh_port: ($ssh_port | tonumber)} else {} end)
+    + (if $ssh_only then {ssh_only: true} else {} end)
+    + (if $buf != "" and ($buf | test("^[0-9]+$")) then {buffer_size: ($buf | tonumber)} else {} end)
+    + (if $cert != "" then {cert_file: $cert} else {} end)'
+  )
 
-    new_listeners.append(obj)
-    proxy['listen'] = new_listeners
-    if 'listener' in proxy:
-        del proxy['listener']
-    if 'listeners' in proxy:
-        del proxy['listeners']
-    if 'ports' in proxy:
-        del proxy['ports']
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson new_obj "${obj}" --argjson port_num "${port}" '
+    .proxy = (.proxy // {}) |
+    .proxy.listen = (
+      [(.proxy.listen // .proxy.ports // [])[] | select(
+        if type == "object" then .port != $port_num
+        else (tostring | split(":") | last | tonumber) != $port_num end
+      )] + [$new_obj]
+    ) |
+    del(.proxy.listener, .proxy.listeners, .proxy.ports)
+  ' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
 
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao salvar porta: {e}')
-"
   systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
   print_message "SUCCESS" "Porta '${host}:${port}' configurada com sucesso!"
   sleep 1.5
 }
 
 remove_port_flow() {
-  local current_ports_json
-  current_ports_json=$(python3 -c "
-import json
-try:
-    with open('${CONFIG_FILE}', 'r') as f:
-        data = json.load(f)
-    proxy = data.get('proxy', {})
-    items = proxy.get('listen', []) or proxy.get('listener', []) or proxy.get('listeners', []) or proxy.get('ports', [])
-    out = []
-    for p in items:
-        if isinstance(p, dict):
-            prefix = 'ssl:' if p.get('ssl') else ''
-            host = p.get('host', '0.0.0.0')
-            out.append(f'{host}:{prefix}{p.get(\"port\")}')
-        else:
-            out.append(str(p))
-    print(json.dumps(out))
-except Exception:
-    print('[]')
-" 2>/dev/null)
-
   local count
-  count=$(python3 -c "import json; print(len(${current_ports_json}))" 2>/dev/null || echo "0")
+  count=$(jq -r '.proxy.listen // .proxy.ports // [] | length' "${CONFIG_FILE}" 2>/dev/null || echo "0")
 
   if [[ "${count}" -eq 0 ]]; then
     print_message "WARN" "Não há portas cadastradas."
@@ -563,28 +492,15 @@ except Exception:
   clear
   draw_header "REMOVER PORTA"
 
-  python3 -c "
-import json
-try:
-    with open('${CONFIG_FILE}', 'r') as f:
-        data = json.load(f)
-    proxy = data.get('proxy', {})
-    items = proxy.get('listen', []) or proxy.get('listener', []) or proxy.get('listeners', []) or proxy.get('ports', [])
-    for idx, p in enumerate(items, start=1):
-        num_str = f'{idx:02d}'
-        p_str = p
-        if isinstance(p, dict):
-            prefix = 'ssl:' if p.get('ssl') else ''
-            host = p.get('host', '0.0.0.0')
-            p_str = f'{host}:{prefix}{p.get(\"port\")}'
-        print(f'{num_str}:{p_str}')
-except Exception:
-    pass
-" 2>/dev/null | while IFS=':' read -r num_str p; do
-    if [[ -n "${num_str}" ]]; then
+  local idx=1
+  while read -r p; do
+    if [[ -n "${p}" ]]; then
+      local num_str
+      printf -v num_str "%02d" "${idx}"
       draw_menu_option "${num_str}" "${p}"
+      ((idx++))
     fi
-  done
+  done < <(jq -r '.proxy.listen // .proxy.ports // [] | .[] | if type == "object" then (.host // "0.0.0.0") + ":" + (if .ssl then "ssl:" else "" end) + (.port | tostring) else tostring end' "${CONFIG_FILE}" 2>/dev/null)
 
   draw_menu_option "00" "CANCELAR"
   draw_footer
@@ -597,32 +513,15 @@ except Exception:
     return
   fi
 
-  python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    proxy = data.setdefault('proxy', {})
-    listeners = proxy.get('listen', []) or proxy.get('listener', []) or proxy.get('listeners', []) or proxy.get('ports', [])
-    choice = '${rem_choice}'.strip()
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(listeners):
-            removed = listeners.pop(idx)
-            print(f'Removido: {removed}')
-    proxy['listen'] = listeners
-    if 'listener' in proxy:
-        del proxy['listener']
-    if 'listeners' in proxy:
-        del proxy['listeners']
-    if 'ports' in proxy:
-        del proxy['ports']
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao remover porta: {e}')
-"
+  local index=$(( 10#${rem_choice} - 1 ))
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson idx "${index}" '
+    .proxy = (.proxy // {}) |
+    .proxy.listen = [(.proxy.listen // .proxy.ports // []) | keys[] as $i | select($i != $idx) | (.proxy.listen // .proxy.ports)[$i]] |
+    del(.proxy.listener, .proxy.listeners, .proxy.ports)
+  ' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
+
   systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
   print_message "SUCCESS" "Porta removida com sucesso!"
   sleep 1.5
@@ -634,7 +533,9 @@ menu_ports() {
     local proxy_ports
     proxy_ports=$(get_config_value "proxy.listen")
 
-    if [[ -z "${proxy_ports}" ]]; then proxy_ports="Nenhuma"; fi
+    if [[ -z "${proxy_ports}" ]]; then
+      proxy_ports="Nenhuma"
+    fi
 
     draw_header "GERENCIAMENTO DE PORTAS"
     draw_box_line "Portas: ${COLORS[WARN]}${proxy_ports}${COLORS[RESET]}"
@@ -678,19 +579,9 @@ menu_auth() {
 
     case "${choice}" in
       1 | 01)
-        python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    server = data.setdefault('server', {})
-    server['auth'] = {'system': True, 'url': '', 'file': ''}
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao salvar autenticação: {e}')
-"
+        local tmp
+        tmp=$(mktemp)
+        jq '.server.auth = {"system": true, "url": "", "file": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
         systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
         print_message "SUCCESS" "Autenticação via Usuários do Sistema configurada!"
         sleep 1.5
@@ -700,19 +591,9 @@ except Exception as e:
         api_url=$(read_input "Digite a URL da API Web (ex: https://exemple.com/auth)")
         api_url=$(echo "${api_url}" | xargs)
         if [[ -n "${api_url}" ]]; then
-          python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    server = data.setdefault('server', {})
-    server['auth'] = {'url': '${api_url}', 'system': False, 'file': ''}
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao salvar autenticação: {e}')
-"
+          local tmp
+          tmp=$(mktemp)
+          jq --arg url "${api_url}" '.server.auth = {"url": $url, "system": false, "file": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
           systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
           print_message "SUCCESS" "Autenticação via API Web configurada!"
           sleep 1.5
@@ -742,19 +623,9 @@ EOF
           print_message "INFO" "Criado arquivo padrão de credenciais em ${user_file}"
         fi
 
-        python3 -c "
-import json
-path = '${CONFIG_FILE}'
-try:
-    with open(path, 'r') as f:
-        data = json.load(f)
-    server = data.setdefault('server', {})
-    server['auth'] = {'file': '${user_file}', 'system': False, 'url': ''}
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-except Exception as e:
-    print(f'Erro ao salvar autenticação: {e}')
-"
+        local tmp
+        tmp=$(mktemp)
+        jq --arg file "${user_file}" '.server.auth = {"file": $file, "system": false, "url": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
         systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
         print_message "SUCCESS" "Autenticação via Arquivo de Usuários configurada!"
         sleep 1.5
@@ -778,19 +649,21 @@ menu_token() {
   local new_token
   new_token=$(read_input "Digite o novo Token de Autenticação")
   new_token=$(echo "${new_token}" | xargs)
-
-  if [[ -n "${new_token}" ]]; then
-    print_message "INFO" "Validando novo token..."
-    if validate_token_with_binary "${new_token}"; then
-      save_token_to_config "${new_token}"
-      systemctl restart "${SERVICE_NAME}" || true
-      print_message "SUCCESS" "Token validado, salvo em ${CONFIG_FILE} e serviço reiniciado!"
-      sleep 1.5
-    else
-      print_message "ERROR" "Token inválido! A alteração não foi salva."
-      sleep 1.5
-    fi
+  if [[ -z "${new_token}" ]]; then
+    return
   fi
+
+  print_message "INFO" "Validando novo token..."
+  if validate_token_with_binary "${new_token}"; then
+    save_token_to_config "${new_token}"
+    systemctl restart "${SERVICE_NAME}" || true
+    print_message "SUCCESS" "Token validado, salvo em ${CONFIG_FILE} e serviço reiniciado!"
+    sleep 1.5
+    return
+  fi
+
+  print_message "ERROR" "Token inválido! A alteração não foi salva."
+  sleep 1.5
 }
 
 view_logs() {
@@ -819,16 +692,18 @@ uninstall_server() {
   echo ""
 
   read -rp "$(format_prompt 'Tem certeza que deseja desinstalar?') (s/n) [n]: " confirm
-  if [[ "${confirm,,}" =~ ^(s|sim)$ ]]; then
-    systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
-    systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
-    rm -f "/etc/systemd/system/${SERVICE_NAME}"
-    systemctl daemon-reload
-    rm -f /usr/local/bin/proto-server /usr/local/bin/proto
-    rm -rf /etc/proto-server
-    print_message "SUCCESS" "DTProto Server desinstalado com sucesso!"
-    exit 0
+  if [[ ! "${confirm,,}" =~ ^(s|sim)$ ]]; then
+    return
   fi
+
+  systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+  systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${SERVICE_NAME}"
+  systemctl daemon-reload
+  rm -f /usr/local/bin/proto-server /usr/local/bin/proto
+  rm -rf /etc/proto-server
+  print_message "SUCCESS" "DTProto Server desinstalado com sucesso!"
+  exit 0
 }
 
 main_menu() {
