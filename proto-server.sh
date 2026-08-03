@@ -341,8 +341,8 @@ display_main_menu() {
   opt03=$(format_option_str "03" "AUTENTICAÇÃO")
   opt04=$(format_option_str "04" "ALTERAR TOKEN")
   opt05=$(format_option_str "05" "VER LOGS")
-  opt06=$(format_option_str "06" "ATUALIZAR SERVIDOR")
-  opt07=$(format_option_str "07" "DESINSTALAR SERVIDOR")
+  opt06=$(format_option_str "06" "ATUALIZAR")
+  opt07=$(format_option_str "07" "DESINSTALAR")
   opt00=$(format_option_str "00" "SAIR")
 
   draw_two_column_line "${opt01}" "${opt05}"
