@@ -233,9 +233,9 @@ download_menu_script() {
 
 main() {
   clear
-  echo -e "${COLORS[TITLE]}╔═════════════════════════════════════════════╗${COLORS[RESET]}"
+  echo -e "${COLORS[TITLE]}╔══════════════════════════════════════════════╗${COLORS[RESET]}"
   echo -e "${COLORS[TITLE]}║${COLORS[SUCCESS]}      INSTALADOR DO DTPROTO SERVER & PROXY    ${COLORS[RESET]}${COLORS[TITLE]}║${COLORS[RESET]}"
-  echo -e "${COLORS[TITLE]}╚═════════════════════════════════════════════╝${COLORS[RESET]}"
+  echo -e "${COLORS[TITLE]}╚══════════════════════════════════════════════╝${COLORS[RESET]}"
   echo ""
 
   check_root
