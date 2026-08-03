@@ -328,10 +328,8 @@ display_main_menu() {
 
   draw_header "DTPROTO SERVER MANAGER • ${version}"
   draw_box_line "Status:      ${status}"
-
-  local conn_str="Conectados:  ${COLORS[SUCCESS]}${online_users}${COLORS[RESET]}"
-  local ports_str="Portas: ${COLORS[WARN]}${proxy_ports}${COLORS[RESET]}"
-  draw_two_column_line "${conn_str}" "${ports_str}"
+  draw_box_line "Conectados:  ${COLORS[SUCCESS]}${online_users}${COLORS[RESET]}"
+  draw_box_line "Portas:      ${COLORS[WARN]}${proxy_ports}${COLORS[RESET]}"
 
   draw_separator
 

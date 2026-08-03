@@ -160,13 +160,29 @@ setup_config() {
   cat <<EOF > "${CONFIG_FILE}"
 {
   "server": {
-    "token": ""
+    "virtual_subnet_cidr": "10.10.0.0/16",
+    "stats_file": "${STATS_FILE}",
+    "auth": {
+      "system": true
+    },
+    "tun": {
+      "name": "tun0",
+      "buffer_size": 16384
+    }
   },
   "proxy": {
-    "enabled": false,
+    "enabled": true,
     "listen": [
-      "8080",
-      "ssl:8443"
+      {
+        "host": "0.0.0.0",
+        "port": 443,
+        "ssl": true
+      },
+      {
+        "host": "0.0.0.0",
+        "port": 80,
+        "ssl": false
+      }
     ]
   }
 }
@@ -178,7 +194,7 @@ install_systemd_service() {
   print_message "INFO" "Instalando serviço systemd em ${SERVICE_FILE}..."
   cat <<EOF > "${SERVICE_FILE}"
 [Unit]
-Description=DTProto Server
+Description=Description=DTProto Server
 After=network.target
 
 [Service]
@@ -256,7 +272,7 @@ main() {
 
   echo ""
   print_message "SUCCESS" "DTProto Server v${version} instalado com sucesso!"
-  print_message "SUCCESS" "Para abrir o menu interativo, digite no terminal: proto"
+  print_message "SUCCESS" "Para abrir o menu interativo, digite no terminal: ${COLORS[ERROR]}proto${COLORS[RESET]}"
   echo ""
 }
 
