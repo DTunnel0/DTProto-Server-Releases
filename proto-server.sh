@@ -7,6 +7,7 @@ declare -A COLORS=(
     ["WARN"]="\033[1;33m"
     ["ERROR"]="\033[1;31m"
     ["SUCCESS"]="\033[1;32m"
+    ["EXIT"]="\033[1;32m"
     ["TITLE"]="\033[1;34m"
     ["PROMPT"]="\033[1;33m"
     ["RESET"]="\033[0m"
@@ -15,10 +16,12 @@ declare -A COLORS=(
 CONFIG_FILE="/etc/proto-server/config.json"
 STATS_FILE="/etc/proto-server/stats.json"
 SERVICE_NAME="proto-server.service"
-INSTALLER_URL="https://raw.githubusercontent.com/DTunnel0/DTProto-Server-Releases/main/script/install-server.sh"
+INSTALLER_URL="https://raw.githubusercontent.com/DTunnel0/DTProto-Server-Releases/main/install-server.sh"
 BINARY_PATH="/usr/local/bin/proto-server"
+PAM_SERVICE_FILE="/etc/pam.d/proto-server"
 INNER_WIDTH=55
 COL_WIDTH=27
+INPUT_EOF="__DTPROTO_INPUT_EOF__"
 
 print_message() {
     local type="$1"
@@ -29,8 +32,10 @@ print_message() {
         "WARN")    prefix="[AVISO]" ;;
         "ERROR")   prefix="[ERRO]" ;;
         "PROMPT")  prefix="[>]" ;;
+        "EXIT")    prefix="[SAIR]" ;;
     esac
-    echo -e "${COLORS[$type]}${prefix} ${message}${COLORS[RESET]}" >&2
+    local color="${COLORS[$type]:-${COLORS[INFO]}}"
+    printf '%b%s %s%b\n' "${color}" "${prefix}" "${message}" "${COLORS[RESET]}" >&2
 }
 
 format_prompt() {
@@ -40,20 +45,127 @@ format_prompt() {
 read_input() {
     local prompt_text="$1"
     local default_value="${2:-}"
+    local default_label="${3:-$default_value}"
     local value
 
-    if [[ -n "$default_value" ]]; then
-        read -rp "$(format_prompt "$prompt_text") [$default_value]: " value
+    if [[ -n "$default_value" && ${#default_label} -gt 15 ]]; then
+        printf '%s\n' "$(format_prompt "Padrão: [${default_label}]")" >&2
+        if ! read -r -p "$(format_prompt "$prompt_text"): " value; then
+            echo "${INPUT_EOF}"
+            return 0
+        fi
         echo "${value:-$default_value}"
         return
     fi
 
-    read -rp "$(format_prompt "$prompt_text"): " value
+    if [[ -n "$default_value" ]]; then
+        if ! read -r -p "$(format_prompt "$prompt_text") [${default_label}]: " value; then
+            echo "${INPUT_EOF}"
+            return 0
+        fi
+        echo "${value:-$default_value}"
+        return
+    fi
+
+    if ! read -r -p "$(format_prompt "$prompt_text"): " value; then
+        echo "${INPUT_EOF}"
+        return 0
+    fi
     echo "$value"
 }
 
 wait_for_enter() {
-    read -rp "$(format_prompt 'Pressione Enter para continuar...')" _
+    read -r -p "$(format_prompt 'Pressione Enter para continuar...')" _ || true
+}
+
+clear_screen() {
+  if [[ -t 1 ]]; then
+    printf '\033[2J\033[H'
+  fi
+}
+
+trim_input() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+shorten_text() {
+  local value="$1"
+  local max_length="${2:-42}"
+  if (( ${#value} <= max_length )); then
+    printf '%s' "${value}"
+    return
+  fi
+  printf '...%s' "${value: -$((max_length - 3))}"
+}
+
+normalize_choice() {
+  local value
+  value=$(trim_input "$1")
+  if [[ "${value}" == "${INPUT_EOF}" ]]; then
+    printf '0'
+    return
+  fi
+  if [[ -z "${value}" ]]; then
+    printf '0'
+    return
+  fi
+  if [[ "${value}" =~ ^[0-9]+$ && ${#value} -le 2 ]]; then
+    printf '%d' "$((10#${value}))"
+    return
+  fi
+  printf '%s' "${value}"
+}
+
+valid_port() {
+  local value="$1"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  (( ${#value} <= 5 )) || return 1
+  local decimal=$((10#${value}))
+  (( decimal >= 1 && decimal <= 65535 ))
+}
+
+valid_positive_integer() {
+  local value="$1"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  (( ${#value} <= 10 )) || return 1
+  (( 10#${value} > 0 ))
+}
+
+update_config() {
+  local tmp
+  tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")
+  if jq "$@" "${CONFIG_FILE}" > "${tmp}"; then
+    chmod 0600 "${tmp}"
+    mv "${tmp}" "${CONFIG_FILE}"
+    return 0
+  fi
+
+  unlink "${tmp}"
+  print_message "ERROR" "Não foi possível atualizar ${CONFIG_FILE}."
+  return 1
+}
+
+restart_service() {
+  if systemctl restart "${SERVICE_NAME}"; then
+    return 0
+  fi
+  print_message "ERROR" "A configuração foi salva, mas o serviço não reiniciou."
+  return 1
+}
+
+run_service_action() {
+  local action="$1"
+  local success_message="$2"
+  if systemctl "${action}" "${SERVICE_NAME}"; then
+    print_message "SUCCESS" "${success_message}"
+    sleep 1.5
+    return 0
+  fi
+  print_message "ERROR" "Falha ao executar '${action}' no serviço."
+  sleep 1.5
 }
 
 check_root() {
@@ -61,6 +173,17 @@ check_root() {
     print_message "ERROR" "Este menu deve ser executado como root (use sudo proto)."
     exit 1
   fi
+}
+
+check_dependencies() {
+  local command_name
+  for command_name in jq systemctl; do
+    if command -v "${command_name}" >/dev/null 2>&1; then
+      continue
+    fi
+    print_message "ERROR" "Dependência ausente: ${command_name}."
+    return 1
+  done
 }
 
 visible_len() {
@@ -189,11 +312,13 @@ get_installed_version() {
 }
 
 get_online_users() {
-  if [[ ! -f "${STATS_FILE}" ]]; then
+  local stats_file
+  stats_file=$(get_stats_file_path)
+  if [[ ! -f "${stats_file}" ]]; then
     echo "0"
     return
   fi
-  jq 'if type == "object" then length else 0 end' "${STATS_FILE}" 2>/dev/null || echo "0"
+  jq -r 'if type == "object" then length else 0 end' "${stats_file}" 2>/dev/null || echo "0"
 }
 
 get_service_status() {
@@ -227,33 +352,42 @@ get_config_value() {
   echo "${val}"
 }
 
+get_stats_file_path() {
+  local configured_path
+  configured_path=$(get_config_value "server.stats_file")
+  echo "${configured_path:-${STATS_FILE}}"
+}
+
 get_auth_description() {
   if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "Usuários do Sistema"
+    echo "Não configurada"
     return
   fi
 
-  local url file
-  url=$(jq -r '.server.auth.url // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-  if [[ -n "${url}" && "${url}" != "null" ]]; then
-    echo "API WEB (${url})"
-    return
-  fi
+  jq -r '
+    .server.auth // {} |
+    if .system then "PAM (proto-server)"
+    elif (.file // "") != "" then "Arquivo de credenciais"
+    elif (.url // "") != "" then "URL externa"
+    else "Não configurada" end
+  ' "${CONFIG_FILE}" 2>/dev/null || echo "Não configurada"
+}
 
-  file=$(jq -r '.server.auth.file // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-  if [[ -n "${file}" && "${file}" != "null" ]]; then
-    echo "Arquivo (${file})"
-    return
+write_pam_service() {
+  if ! cat <<'EOF' > "${PAM_SERVICE_FILE}"
+auth required pam_unix.so nodelay
+account required pam_unix.so
+EOF
+  then
+    print_message "ERROR" "Não foi possível gravar a configuração PAM."
+    return 1
   fi
-
-  echo "Usuários do Sistema"
+  chmod 0644 "${PAM_SERVICE_FILE}"
 }
 
 save_token_to_config() {
   local new_token="$1"
-  local tmp
-  tmp=$(mktemp)
-  jq --arg token "${new_token}" '.server.token = $token' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
+  update_config --arg token "${new_token}" '.server.token = $token'
 }
 
 validate_token_with_binary() {
@@ -267,7 +401,7 @@ validate_token_with_binary() {
   fi
 
   if [[ ! -x "${BINARY_PATH}" ]]; then
-    return 0
+    return 1
   fi
 
   "${BINARY_PATH}" --validate --token "${token}" >/dev/null 2>&1
@@ -281,7 +415,7 @@ ensure_valid_token() {
     return 0
   fi
 
-  clear
+  clear_screen
   draw_header "VALIDAÇÃO DO TOKEN DE ACESSO" "Autenticação Obrigatória"
   if [[ -z "${token}" ]]; then
     draw_box_line "${COLORS[WARN]}Nenhum Token encontrado na configuração.${COLORS[RESET]}"
@@ -293,8 +427,11 @@ ensure_valid_token() {
 
   echo ""
   while true; do
-    token=$(read_input "Por favor, insira seu token de autenticação")
-    token=$(echo "${token}" | xargs)
+    token=$(read_input "Digite o token")
+    if [[ "${token}" == "${INPUT_EOF}" ]]; then
+      return 1
+    fi
+    token=$(trim_input "${token}")
 
     if [[ -z "${token}" ]]; then
       print_message "ERROR" "O token não pode ser vazio."
@@ -303,8 +440,11 @@ ensure_valid_token() {
 
     print_message "INFO" "Validando token no servidor..."
     if validate_token_with_binary "${token}"; then
-      save_token_to_config "${token}"
-      systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
+      if ! save_token_to_config "${token}"; then
+        print_message "ERROR" "Não foi possível salvar o token."
+        continue
+      fi
+      restart_service || true
       print_message "SUCCESS" "Token validado e salvo em ${CONFIG_FILE}!"
       sleep 1.5
       return 0
@@ -316,11 +456,12 @@ ensure_valid_token() {
 }
 
 display_main_menu() {
-  local status version online_users proxy_ports
+  local status version online_users proxy_ports stats_file
   status=$(get_service_status)
   version=$(get_installed_version)
   online_users=$(get_online_users)
   proxy_ports=$(get_config_value "proxy.listen")
+  stats_file=$(get_stats_file_path)
 
   if [[ -z "${proxy_ports}" ]]; then
     proxy_ports="Nenhuma"
@@ -329,11 +470,12 @@ display_main_menu() {
   draw_header "DTPROTO SERVER MANAGER • ${version}"
   draw_box_line "Status:      ${status}"
   draw_box_line "Conectados:  ${COLORS[SUCCESS]}${online_users}${COLORS[RESET]}"
+  draw_box_line "Stats:       $(shorten_text "${stats_file}")"
   draw_box_line "Portas:      ${COLORS[WARN]}${proxy_ports}${COLORS[RESET]}"
 
   draw_separator
 
-  local opt01 opt02 opt03 opt04 opt05 opt06 opt07 opt00
+  local opt01 opt02 opt03 opt04 opt05 opt06 opt07 opt08 opt00
   opt01=$(format_option_str "01" "GERENCIAR SERVIÇO")
   opt02=$(format_option_str "02" "GERENCIAR PORTAS")
   opt03=$(format_option_str "03" "AUTENTICAÇÃO")
@@ -341,19 +483,21 @@ display_main_menu() {
   opt05=$(format_option_str "05" "VER LOGS")
   opt06=$(format_option_str "06" "ATUALIZAR")
   opt07=$(format_option_str "07" "DESINSTALAR")
+  opt08=$(format_option_str "08" "STATS")
   opt00=$(format_option_str "00" "SAIR")
 
   draw_two_column_line "${opt01}" "${opt05}"
   draw_two_column_line "${opt02}" "${opt06}"
   draw_two_column_line "${opt03}" "${opt07}"
-  draw_two_column_line "${opt04}" "${opt00}"
+  draw_two_column_line "${opt04}" "${opt08}"
+  draw_two_column_line "${opt00}"
 
   draw_footer
 }
 
 menu_service_control() {
   while true; do
-    clear
+    clear_screen
     local status
     status=$(get_service_status)
 
@@ -368,25 +512,13 @@ menu_service_control() {
     echo ""
 
     local choice
-    choice=$(read_input "Digite sua opção")
+    choice=$(normalize_choice "$(read_input "Escolha uma opção")")
 
     case "${choice}" in
-      1 | 01)
-        systemctl start "${SERVICE_NAME}"
-        print_message "SUCCESS" "Serviço iniciado com sucesso!"
-        sleep 1.5
-        ;;
-      2 | 02)
-        systemctl stop "${SERVICE_NAME}"
-        print_message "WARN" "Serviço parado!"
-        sleep 1.5
-        ;;
-      3 | 03)
-        systemctl restart "${SERVICE_NAME}"
-        print_message "SUCCESS" "Serviço reiniciado com sucesso!"
-        sleep 1.5
-        ;;
-      0 | 00) break ;;
+      1) run_service_action start "Serviço iniciado com sucesso!" ;;
+      2) run_service_action stop "Serviço parado com sucesso!" ;;
+      3) run_service_action restart "Serviço reiniciado com sucesso!" ;;
+      0) break ;;
       *)
         print_message "ERROR" "Opção inválida."
         sleep 1
@@ -400,46 +532,60 @@ add_port_flow() {
   print_message "INFO" "Configuração de Porta do Proxy"
   echo ""
 
-  local host port ssl_choice is_ssl custom_msg custom_ssh_port ssh_choice is_ssh_only custom_buf custom_cert
-  host=$(read_input "Digite o Host de escuta" "0.0.0.0")
-  host=$(echo "${host}" | xargs)
+  local host="0.0.0.0" port ssl_choice is_ssl custom_msg custom_ssh_port ssh_choice is_ssh_only custom_buf custom_cert
 
   while true; do
-    port=$(read_input "Digite o número da porta (ex: 8080, 8443)")
-    port=$(echo "${port}" | xargs)
-    if [[ "${port}" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+    port=$(read_input "Número da porta (1-65535)")
+    [[ "${port}" == "${INPUT_EOF}" ]] && return 0
+    port=$(trim_input "${port}")
+    if valid_port "${port}"; then
+      port=$((10#${port}))
       break
     fi
     print_message "ERROR" "Porta inválida. Digite um número entre 1 e 65535."
   done
 
-  read -rp "$(format_prompt "Habilitar SSL/TLS nesta porta?") (s/n) [n]: " ssl_choice
+  ssl_choice=$(read_input "Ativar SSL? (s/n)")
+  [[ "${ssl_choice}" == "${INPUT_EOF}" ]] && return 0
   is_ssl=false
   if [[ "${ssl_choice,,}" =~ ^(s|sim)$ ]]; then
     is_ssl=true
   fi
 
-  read -rp "$(format_prompt "Mensagem HTTP personalizada?") [Enter para padrão/DTunnel]: " custom_msg
-  custom_msg=$(echo "${custom_msg}" | xargs)
+  custom_msg=$(read_input "Mensagem HTTP (vazio = padrão)")
+  [[ "${custom_msg}" == "${INPUT_EOF}" ]] && return 0
+  custom_msg=$(trim_input "${custom_msg}")
 
-  read -rp "$(format_prompt "Porta SSH do encaminhamento?") [Enter para padrão/22]: " custom_ssh_port
-  custom_ssh_port=$(echo "${custom_ssh_port}" | xargs)
+  custom_ssh_port=$(read_input "Porta SSH (vazio = 22)")
+  [[ "${custom_ssh_port}" == "${INPUT_EOF}" ]] && return 0
+  custom_ssh_port=$(trim_input "${custom_ssh_port}")
+  if [[ -n "${custom_ssh_port}" ]] && ! valid_port "${custom_ssh_port}"; then
+    print_message "ERROR" "Porta SSH inválida. Use um número entre 1 e 65535."
+    return 1
+  fi
 
-  read -rp "$(format_prompt "Restringir a Somente SSH?") (s/n) [n]: " ssh_choice
+  ssh_choice=$(read_input "Usar somente SSH? (s/n)")
+  [[ "${ssh_choice}" == "${INPUT_EOF}" ]] && return 0
   is_ssh_only=false
   if [[ "${ssh_choice,,}" =~ ^(s|sim)$ ]]; then
     is_ssh_only=true
   fi
 
-  read -rp "$(format_prompt "Buffer de conexão em bytes?") [Enter para padrão/32768]: " custom_buf
-  custom_buf=$(echo "${custom_buf}" | xargs)
+  custom_buf=$(read_input "Buffer em bytes (vazio = 32768)")
+  [[ "${custom_buf}" == "${INPUT_EOF}" ]] && return 0
+  custom_buf=$(trim_input "${custom_buf}")
+  if [[ -n "${custom_buf}" ]] && ! valid_positive_integer "${custom_buf}"; then
+    print_message "ERROR" "Buffer inválido. Use um número maior que zero."
+    return 1
+  fi
 
-  read -rp "$(format_prompt "Certificado SSL (.pem/.crt)") [Enter para interno/padrão]: " custom_cert
-  custom_cert=$(echo "${custom_cert}" | xargs)
+  custom_cert=$(read_input "Certificado SSL (vazio = padrão)")
+  [[ "${custom_cert}" == "${INPUT_EOF}" ]] && return 0
+  custom_cert=$(trim_input "${custom_cert}")
 
   local obj
   obj=$(jq -n \
-    --arg host "${host:-0.0.0.0}" \
+    --arg host "${host}" \
     --argjson port "${port}" \
     --argjson ssl "${is_ssl}" \
     --arg msg "${custom_msg}" \
@@ -459,20 +605,18 @@ add_port_flow() {
     + (if $cert != "" then {cert_file: $cert} else {} end)'
   )
 
-  local tmp
-  tmp=$(mktemp)
-  jq --argjson new_obj "${obj}" --argjson port_num "${port}" '
+  update_config --argjson new_obj "${obj}" --argjson port_num "${port}" '
     .proxy = (.proxy // {}) |
     .proxy.listen = (
       [(.proxy.listen // .proxy.ports // [])[] | select(
         if type == "object" then .port != $port_num
-        else (tostring | split(":") | last | tonumber) != $port_num end
+        else (try (tostring | split(":") | last | tonumber) catch -1) != $port_num end
       )] + [$new_obj]
     ) |
     del(.proxy.listener, .proxy.listeners, .proxy.ports)
-  ' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
+  '
 
-  systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
+  restart_service || true
   print_message "SUCCESS" "Porta '${host}:${port}' configurada com sucesso!"
   sleep 1.5
 }
@@ -487,7 +631,7 @@ remove_port_flow() {
     return
   fi
 
-  clear
+  clear_screen
   draw_header "REMOVER PORTA"
 
   local idx=1
@@ -496,7 +640,7 @@ remove_port_flow() {
       local num_str
       printf -v num_str "%02d" "${idx}"
       draw_menu_option "${num_str}" "${p}"
-      ((idx++))
+      idx=$((idx + 1))
     fi
   done < <(jq -r '.proxy.listen // .proxy.ports // [] | .[] | if type == "object" then (.host // "0.0.0.0") + ":" + (if .ssl then "ssl:" else "" end) + (.port | tostring) else tostring end' "${CONFIG_FILE}" 2>/dev/null)
 
@@ -505,29 +649,34 @@ remove_port_flow() {
   echo ""
 
   local rem_choice
-  rem_choice=$(read_input "Digite o número da porta a remover")
+  rem_choice=$(normalize_choice "$(read_input "Escolha o número da porta")")
 
-  if [[ "${rem_choice}" == "0" ]] || [[ "${rem_choice}" == "00" ]] || [[ -z "${rem_choice}" ]]; then
+  if [[ "${rem_choice}" == "0" ]]; then
     return
   fi
 
-  local index=$(( 10#${rem_choice} - 1 ))
-  local tmp
-  tmp=$(mktemp)
-  jq --argjson idx "${index}" '
-    .proxy = (.proxy // {}) |
-    .proxy.listen = [(.proxy.listen // .proxy.ports // []) | keys[] as $i | select($i != $idx) | (.proxy.listen // .proxy.ports)[$i]] |
-    del(.proxy.listener, .proxy.listeners, .proxy.ports)
-  ' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
+  if [[ ! "${rem_choice}" =~ ^[0-9]+$ ]] || (( rem_choice < 1 || rem_choice > count )); then
+    print_message "ERROR" "Seleção inválida. Escolha uma porta da lista."
+    sleep 1.5
+    return 0
+  fi
 
-  systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
+  local index=$((rem_choice - 1))
+  update_config --argjson idx "${index}" '
+    (.proxy.listen // .proxy.ports // []) as $ports |
+    .proxy = (.proxy // {}) |
+    .proxy.listen = [$ports | to_entries[] | select(.key != $idx) | .value] |
+    del(.proxy.listener, .proxy.listeners, .proxy.ports)
+  '
+
+  restart_service || true
   print_message "SUCCESS" "Porta removida com sucesso!"
   sleep 1.5
 }
 
 menu_ports() {
   while true; do
-    clear
+    clear_screen
     local proxy_ports
     proxy_ports=$(get_config_value "proxy.listen")
 
@@ -545,12 +694,12 @@ menu_ports() {
     echo ""
 
     local choice
-    choice=$(read_input "Digite sua opção")
+    choice=$(normalize_choice "$(read_input "Escolha uma opção")")
 
     case "${choice}" in
-      1 | 01) add_port_flow ;;
-      2 | 02) remove_port_flow ;;
-      0 | 00) break ;;
+      1) add_port_flow || true ;;
+      2) remove_port_flow || true ;;
+      0) break ;;
       *) print_message "ERROR" "Opção inválida."; sleep 1 ;;
     esac
   done
@@ -558,95 +707,149 @@ menu_ports() {
 
 menu_auth() {
   while true; do
-    clear
+    clear_screen
     local current_auth
     current_auth=$(get_auth_description)
 
     draw_header "AUTENTICAÇÃO DE USUÁRIOS"
     draw_box_line "Modo Atual: ${COLORS[INFO]}${current_auth}${COLORS[RESET]}"
     draw_separator
-    draw_menu_option "01" "USUÁRIOS DO SISTEMA"
-    draw_menu_option "02" "API WEB"
-    draw_menu_option "03" "ARQUIVO DE USUÁRIOS"
+    draw_menu_option "01" "PAM / SISTEMA"
+    draw_menu_option "02" "ARQUIVO (JSON)"
+    draw_menu_option "03" "URL EXTERNA"
     draw_menu_option "00" "VOLTAR"
     draw_footer
     echo ""
 
     local choice
-    choice=$(read_input "Digite sua opção")
+    choice=$(normalize_choice "$(read_input "Escolha uma opção")")
 
     case "${choice}" in
-      1 | 01)
-        local tmp
-        tmp=$(mktemp)
-        jq '.server.auth = {"system": true, "url": "", "file": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
-        systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
-        print_message "SUCCESS" "Autenticação via Usuários do Sistema configurada!"
-        sleep 1.5
-        ;;
-      2 | 02)
-        local api_url
-        api_url=$(read_input "Digite a URL da API Web (ex: https://exemple.com/auth)")
-        api_url=$(echo "${api_url}" | xargs)
-        if [[ -n "${api_url}" ]]; then
-          local tmp
-          tmp=$(mktemp)
-          jq --arg url "${api_url}" '.server.auth = {"url": $url, "system": false, "file": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
-          systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
-          print_message "SUCCESS" "Autenticação via API Web configurada!"
+      1)
+        if ! update_config '.server.auth = {"system": true}'; then
           sleep 1.5
+          continue
         fi
-        ;;
-      3 | 03)
-        local default_cred_file="/etc/proto-server/credentials.json"
-        local user_file
-        user_file=$(read_input "Caminho do arquivo de usuários" "${default_cred_file}")
-        user_file=$(echo "${user_file}" | xargs)
-        if [[ -z "${user_file}" ]]; then
-          user_file="${default_cred_file}"
+        if ! write_pam_service; then
+          sleep 1.5
+          continue
         fi
-
-        if [[ ! -f "${user_file}" ]]; then
-          mkdir -p "$(dirname "${user_file}")"
-          cat <<EOF > "${user_file}"
-{
-  "credentials": [
-    {
-      "user": "Dtunnel",
-      "pass": "Dtunnel"
-    }
-  ]
-}
-EOF
-          print_message "INFO" "Criado arquivo padrão de credenciais em ${user_file}"
-        fi
-
-        local tmp
-        tmp=$(mktemp)
-        jq --arg file "${user_file}" '.server.auth = {"file": $file, "system": false, "url": ""}' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
-        systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
-        print_message "SUCCESS" "Autenticação via Arquivo de Usuários configurada!"
+        restart_service || true
+        print_message "SUCCESS" "Autenticação PAM dos usuários da máquina configurada!"
         sleep 1.5
         ;;
-      0 | 00) break ;;
+      2)
+        local auth_file auth_file_default
+        auth_file_default=$(get_config_value "server.auth.file")
+        auth_file_default="${auth_file_default:-/etc/proto-server/credentials.json}"
+        auth_file=$(read_input "Arquivo JSON (ex.: credentials.json)" "${auth_file_default}" "${auth_file_default}")
+        [[ "${auth_file}" == "${INPUT_EOF}" ]] && continue
+        auth_file=$(trim_input "${auth_file}")
+        if [[ ! -f "${auth_file}" || ! -r "${auth_file}" ]]; then
+          print_message "ERROR" "O arquivo não existe ou não pode ser lido."
+          sleep 1.5
+          continue
+        fi
+        if ! update_config --arg file "${auth_file}" '.server.auth = {"file": $file}'; then
+          sleep 1.5
+          continue
+        fi
+        restart_service || true
+        print_message "SUCCESS" "Autenticação por arquivo configurada!"
+        sleep 1.5
+        ;;
+      3)
+        local auth_url auth_url_default
+        auth_url_default=$(get_config_value "server.auth.url")
+        auth_url_default="${auth_url_default:-https://auth.example.com/validate}"
+        auth_url=$(read_input "URL HTTP/HTTPS (ex.: https://auth...)" "${auth_url_default}" "${auth_url_default}")
+        [[ "${auth_url}" == "${INPUT_EOF}" ]] && continue
+        auth_url=$(trim_input "${auth_url}")
+        if [[ ! "${auth_url}" =~ ^https?://[^[:space:]]+$ ]]; then
+          print_message "ERROR" "Informe uma URL HTTP ou HTTPS válida."
+          sleep 1.5
+          continue
+        fi
+        if ! update_config --arg url "${auth_url}" '.server.auth = {"url": $url}'; then
+          sleep 1.5
+          continue
+        fi
+        restart_service || true
+        print_message "SUCCESS" "Autenticação por URL configurada!"
+        sleep 1.5
+        ;;
+      0) break ;;
+      *) print_message "ERROR" "Opção inválida."; sleep 1 ;;
+    esac
+  done
+}
+
+menu_stats() {
+  while true; do
+    clear_screen
+    local current_path
+    current_path=$(get_stats_file_path)
+
+    draw_header "ARQUIVO DE STATS"
+    draw_box_line "Arquivo: $(shorten_text "${current_path}")"
+    draw_box_line "Usuários: ${COLORS[SUCCESS]}$(get_online_users)${COLORS[RESET]}"
+    draw_separator
+    draw_menu_option "01" "ALTERAR CAMINHO"
+    draw_menu_option "00" "VOLTAR"
+    draw_footer
+    echo ""
+
+    local choice
+    choice=$(normalize_choice "$(read_input "Escolha uma opção")")
+    case "${choice}" in
+      1)
+        local new_path parent_path
+        new_path=$(read_input "Novo caminho do arquivo" "${current_path}" "$(shorten_text "${current_path}")")
+        [[ "${new_path}" == "${INPUT_EOF}" ]] && continue
+        new_path=$(trim_input "${new_path}")
+        if [[ ! "${new_path}" =~ ^/ || -z "${new_path}" ]]; then
+          print_message "ERROR" "Informe um caminho absoluto, por exemplo /var/lib/proto-server/stats.json."
+          sleep 1.5
+          continue
+        fi
+        parent_path=$(dirname -- "${new_path}")
+        if [[ ! -d "${parent_path}" || ! -w "${parent_path}" ]]; then
+          print_message "ERROR" "O diretório pai não existe ou não pode ser gravado."
+          sleep 1.5
+          continue
+        fi
+        if ! update_config --arg stats_file "${new_path}" '.server.stats_file = $stats_file'; then
+          sleep 1.5
+          continue
+        fi
+        restart_service || true
+        print_message "SUCCESS" "Arquivo de stats configurado em ${new_path}."
+        sleep 1.5
+        ;;
+      0) break ;;
       *) print_message "ERROR" "Opção inválida."; sleep 1 ;;
     esac
   done
 }
 
 menu_token() {
-  clear
+  clear_screen
   local current_token
   current_token=$(get_config_value 'server.token')
 
   draw_header "ALTERAR TOKEN DE AUTENTICAÇÃO"
-  draw_box_line "Token Atual: ${COLORS[INFO]}${current_token:-Não definido}${COLORS[RESET]}"
+  local token_status="Não definido"
+  if [[ -n "${current_token}" ]]; then
+    token_status="Configurado (oculto)"
+  fi
+  draw_box_line "Token Atual: ${COLORS[INFO]}${token_status}${COLORS[RESET]}"
   draw_footer
   echo ""
 
   local new_token
-  new_token=$(read_input "Digite o novo Token de Autenticação")
-  new_token=$(echo "${new_token}" | xargs)
+  new_token=$(read_input "Digite o novo token")
+  [[ "${new_token}" == "${INPUT_EOF}" ]] && return 0
+  new_token=$(trim_input "${new_token}")
   if [[ -z "${new_token}" ]]; then
     return
   fi
@@ -654,8 +857,8 @@ menu_token() {
   print_message "INFO" "Validando novo token..."
   if validate_token_with_binary "${new_token}"; then
     save_token_to_config "${new_token}"
-    systemctl restart "${SERVICE_NAME}" || true
-    print_message "SUCCESS" "Token validado, salvo em ${CONFIG_FILE} e serviço reiniciado!"
+    restart_service || true
+    print_message "SUCCESS" "Token validado e salvo em ${CONFIG_FILE}!"
     sleep 1.5
     return
   fi
@@ -665,7 +868,7 @@ menu_token() {
 }
 
 view_logs() {
-  clear
+  clear_screen
   print_message "INFO" "Exibindo logs em tempo real (Pressione Ctrl+C para voltar ao menu)..."
   echo ""
   trap 'trap - INT; return 0' INT
@@ -674,22 +877,38 @@ view_logs() {
 }
 
 update_server() {
-  clear
+  clear_screen
   print_message "INFO" "Baixando instalador e atualizando para a versão mais recente..."
-  bash <(curl -sL "${INSTALLER_URL}")
+  local installer
+  installer=$(mktemp)
+  if ! curl -fSL "${INSTALLER_URL}" -o "${installer}"; then
+    unlink "${installer}"
+    print_message "ERROR" "Não foi possível baixar o instalador."
+    wait_for_enter
+    return
+  fi
+
+  if ! bash "${installer}"; then
+    unlink "${installer}"
+    print_message "ERROR" "A atualização falhou."
+    wait_for_enter
+    return
+  fi
+
+  unlink "${installer}"
   print_message "SUCCESS" "Atualização concluída!"
   wait_for_enter
 }
 
 uninstall_server() {
-  clear
+  clear_screen
   draw_header "DESINSTALAR SERVIDOR" "Atenção: Ação Destrutiva"
   draw_box_line "${COLORS[ERROR]}Esta ação removerá completamente o DTProto Server,${COLORS[RESET]}"
   draw_box_line "${COLORS[ERROR]}serviços systemd e arquivos de configuração.${COLORS[RESET]}"
   draw_footer
   echo ""
 
-  read -rp "$(format_prompt 'Tem certeza que deseja desinstalar?') (s/n) [n]: " confirm
+  confirm=$(read_input "Confirmar desinstalação? (s/n)")
   if [[ ! "${confirm,,}" =~ ^(s|sim)$ ]]; then
     return
   fi
@@ -697,7 +916,8 @@ uninstall_server() {
   systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
   systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
   rm -f "/etc/systemd/system/${SERVICE_NAME}"
-  systemctl daemon-reload
+  rm -f "${PAM_SERVICE_FILE}"
+  systemctl daemon-reload 2>/dev/null || true
   rm -f /usr/local/bin/proto-server /usr/local/bin/proto
   rm -rf /etc/proto-server
   print_message "SUCCESS" "DTProto Server desinstalado com sucesso!"
@@ -706,24 +926,29 @@ uninstall_server() {
 
 main_menu() {
   check_root
-  ensure_valid_token
+  check_dependencies
+  if ! ensure_valid_token; then
+    print_message "WARN" "Entrada encerrada pelo usuário."
+    return 0
+  fi
 
   while true; do
-    clear
+    clear_screen
     display_main_menu
     echo ""
     local choice
-    choice=$(read_input "Digite sua opção")
+    choice=$(normalize_choice "$(read_input "Escolha uma opção")")
 
     case "${choice}" in
-      1 | 01) menu_service_control ;;
-      2 | 02) menu_ports ;;
-      3 | 03) menu_auth ;;
-      4 | 04) menu_token ;;
-      5 | 05) view_logs ;;
-      6 | 06) update_server ;;
-      7 | 07) uninstall_server ;;
-      0 | 00)
+      1) menu_service_control ;;
+      2) menu_ports ;;
+      3) menu_auth ;;
+      4) menu_token ;;
+      5) view_logs ;;
+      6) update_server ;;
+      7) uninstall_server ;;
+      8) menu_stats ;;
+      0)
         print_message "EXIT" "Saindo. Até logo!"
         exit 0
         ;;
@@ -735,4 +960,6 @@ main_menu() {
   done
 }
 
-main_menu "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main_menu "$@"
+fi
