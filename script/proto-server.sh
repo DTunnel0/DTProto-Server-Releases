@@ -467,7 +467,7 @@ display_main_menu() {
     proxy_ports="Nenhuma"
   fi
 
-  draw_header "DTPROTO SERVER MANAGER • ${version}"
+  draw_header "DTUNNEL PROTOCOLO SERVER • ${version}"
   draw_box_line "Status:      ${status}"
   draw_box_line "Conectados:  ${COLORS[SUCCESS]}${online_users}${COLORS[RESET]}"
   draw_box_line "Stats:       $(shorten_text "${stats_file}")"
@@ -529,7 +529,7 @@ menu_service_control() {
 
 add_port_flow() {
   echo ""
-  print_message "INFO" "Configuração de Porta do Proxy"
+  print_message "INFO" "Configuração de Porta do Servidor"
   echo ""
 
   local host="0.0.0.0" port ssl_choice is_ssl custom_msg custom_ssh_port ssh_choice is_ssh_only custom_buf custom_cert
@@ -903,7 +903,7 @@ update_server() {
 uninstall_server() {
   clear_screen
   draw_header "DESINSTALAR SERVIDOR" "Atenção: Ação Destrutiva"
-  draw_box_line "${COLORS[ERROR]}Esta ação removerá completamente o DTProto Server,${COLORS[RESET]}"
+  draw_box_line "${COLORS[ERROR]}Esta ação removerá completamente o DTunnel Protocolo Server,${COLORS[RESET]}"
   draw_box_line "${COLORS[ERROR]}serviços systemd e arquivos de configuração.${COLORS[RESET]}"
   draw_footer
   echo ""
@@ -920,7 +920,7 @@ uninstall_server() {
   systemctl daemon-reload 2>/dev/null || true
   rm -f /usr/local/bin/proto-server /usr/local/bin/proto
   rm -rf /etc/proto-server
-  print_message "SUCCESS" "DTProto Server desinstalado com sucesso!"
+  print_message "SUCCESS" "DTunnel Protocolo Server desinstalado com sucesso!"
   exit 0
 }
 
