@@ -903,7 +903,8 @@ update_server() {
 uninstall_server() {
   clear_screen
   draw_header "DESINSTALAR SERVIDOR" "Atenção: Ação Destrutiva"
-  draw_box_line "${COLORS[ERROR]}Esta ação removerá completamente o DTunnel Protocolo Server,${COLORS[RESET]}"
+  draw_box_line "${COLORS[ERROR]}Esta ação removerá completamente o${COLORS[RESET]}"
+  draw_box_line "${COLORS[ERROR]}DTunnel Protocolo Server,${COLORS[RESET]}"
   draw_box_line "${COLORS[ERROR]}serviços systemd e arquivos de configuração.${COLORS[RESET]}"
   draw_footer
   echo ""
