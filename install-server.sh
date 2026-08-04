@@ -351,7 +351,7 @@ main() {
 
   echo ""
   print_message "SUCCESS" "DTunnel Protocolo Server v${version} instalado com sucesso!"
-  print_message "INFO" "Execute ${COLORS[ERROR]}proto${COLORS[RESET]} para configurar o token e iniciar o serviço."
+  print_message "INFO" "Para abrir o menu, execute: ${COLORS[ERROR]}proto${COLORS[RESET]}"
   echo ""
 }
 
