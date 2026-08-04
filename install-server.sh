@@ -19,7 +19,7 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 STATS_FILE="${CONFIG_DIR}/stats.json"
 SERVICE_FILE="/etc/systemd/system/proto-server.service"
 PAM_SERVICE_FILE="/etc/pam.d/proto-server"
-LEGACY_SERVICES=("proto-server.service" "dtproto.service" "proxydt.service")
+LEGACY_SERVICES=("proto-server.service" "dtproto.service" "proxydt.service" "proxy-443.service" "proxy-80.service")
 
 print_message() {
     local type="$1"
@@ -210,6 +210,44 @@ EOF
   print_message "SUCCESS" "Configuração criada em ${CONFIG_FILE}."
 }
 
+setup_token() {
+  local binary="$1"
+  local current_token token tmp
+
+  current_token=$(jq -r '.server.token // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+  if [[ -n "${current_token}" ]] && "${binary}" --config "${CONFIG_FILE}" --validate >/dev/null 2>&1; then
+    print_message "SUCCESS" "Token existente validado."
+    return 0
+  fi
+
+  print_message "INFO" "Informe o token de acesso do servidor."
+  while true; do
+    read -r -s -p "[>] Token: " token
+    echo ""
+    if [[ -z "${token}" ]]; then
+      print_message "ERROR" "O token não pode ser vazio."
+      continue
+    fi
+
+    tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")
+    if ! jq --arg token "${token}" '.server.token = $token' "${CONFIG_FILE}" > "${tmp}"; then
+      rm -f "${tmp}"
+      print_message "ERROR" "Não foi possível salvar o token na configuração."
+      return 1
+    fi
+    chmod 0600 "${tmp}"
+    mv "${tmp}" "${CONFIG_FILE}"
+
+    print_message "INFO" "Validando token..."
+    if "${binary}" --config "${CONFIG_FILE}" --validate >/dev/null 2>&1; then
+      print_message "SUCCESS" "Token validado e salvo."
+      return 0
+    fi
+
+    print_message "ERROR" "Token inválido ou não foi possível validá-lo."
+  done
+}
+
 install_pam_service() {
   print_message "INFO" "Configurando serviço PAM em ${PAM_SERVICE_FILE}..."
   mkdir -p "$(dirname "${PAM_SERVICE_FILE}")"
@@ -273,6 +311,7 @@ download_binary() {
     print_message "ERROR" "O binário baixado não possui suporte PAM válido para esta VPS."
     exit 1
   fi
+
   if ! "${binary}" --version >/dev/null 2>&1; then
     print_message "ERROR" "O binário PAM não é compatível com a biblioteca C desta VPS."
     exit 1
@@ -356,6 +395,11 @@ main() {
 
   configure_sysctl
   setup_config
+  if ! setup_token "${candidate}"; then
+    print_message "ERROR" "Não foi possível configurar o token do servidor."
+    rollback_binary "${backup}"
+    exit 1
+  fi
   install_pam_service
 
   print_message "INFO" "Instalando e validando o serviço proto-server..."
