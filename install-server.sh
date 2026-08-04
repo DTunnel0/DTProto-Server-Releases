@@ -210,44 +210,6 @@ EOF
   print_message "SUCCESS" "Configuração criada em ${CONFIG_FILE}."
 }
 
-setup_token() {
-  local binary="$1"
-  local current_token token tmp
-
-  current_token=$(jq -r '.server.token // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-  if [[ -n "${current_token}" ]] && "${binary}" --config "${CONFIG_FILE}" --validate >/dev/null 2>&1; then
-    print_message "SUCCESS" "Token existente validado."
-    return 0
-  fi
-
-  print_message "INFO" "Informe o token de acesso do servidor."
-  while true; do
-    read -r -p "[>] Token: " token
-    echo ""
-    if [[ -z "${token}" ]]; then
-      print_message "ERROR" "O token não pode ser vazio."
-      continue
-    fi
-
-    tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")
-    if ! jq --arg token "${token}" '.server.token = $token' "${CONFIG_FILE}" > "${tmp}"; then
-      rm -f "${tmp}"
-      print_message "ERROR" "Não foi possível salvar o token na configuração."
-      return 1
-    fi
-    chmod 0600 "${tmp}"
-    mv "${tmp}" "${CONFIG_FILE}"
-
-    print_message "INFO" "Validando token..."
-    if "${binary}" --config "${CONFIG_FILE}" --validate >/dev/null 2>&1; then
-      print_message "SUCCESS" "Token validado e salvo."
-      return 0
-    fi
-
-    print_message "ERROR" "Token inválido ou não foi possível validá-lo."
-  done
-}
-
 install_pam_service() {
   print_message "INFO" "Configurando serviço PAM em ${PAM_SERVICE_FILE}..."
   mkdir -p "$(dirname "${PAM_SERVICE_FILE}")"
@@ -278,8 +240,7 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable proto-server.service >/dev/null 2>&1 || true
-  print_message "SUCCESS" "Serviço proto-server.service configurado e ativado."
+  print_message "SUCCESS" "Serviço proto-server.service configurado."
 }
 
 download_binary() {
@@ -291,12 +252,12 @@ download_binary() {
   local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${artifact}"
 
   print_message "INFO" "Baixando versão ${version} (${arch})..."
-  if ! curl -fSL -o "${binary}" "${download_url}"; then
+  if ! curl -fsSL -o "${binary}" "${download_url}"; then
     print_message "ERROR" "Erro ao baixar o binário da versão ${version}."
     exit 1
   fi
 
-  if ! curl -fSL -o "${binary}.sha256" "${download_url}.sha256"; then
+  if ! curl -fsSL -o "${binary}.sha256" "${download_url}.sha256"; then
     print_message "ERROR" "Erro ao baixar o checksum da versão ${version}."
     exit 1
   fi
@@ -323,7 +284,7 @@ download_binary() {
 download_menu_script() {
   local raw_url="https://raw.githubusercontent.com/${GITHUB_REPO}/main/proto-server.sh"
   print_message "INFO" "Instalando menu interativo 'proto'..."
-  if ! curl -fSL -o "/tmp/proto" "${raw_url}" 2>/dev/null; then
+  if ! curl -fsSL -o "/tmp/proto" "${raw_url}" 2>/dev/null; then
     print_message "WARN" "Não foi possível atualizar o script de menu."
     return
   fi
@@ -333,27 +294,17 @@ download_menu_script() {
   print_message "SUCCESS" "Menu de gerenciamento instalado em ${INSTALL_DIR}/proto."
 }
 
-activate_binary() {
+install_binary() {
   local candidate=$1
   cleanup_legacy_installations
   install -m 0755 "${candidate}" "${INSTALL_DIR}/proto-server"
   install_systemd_service
-  systemctl restart proto-server.service
-  sleep 2
-  systemctl is-active --quiet proto-server.service
-}
-
-rollback_binary() {
-  local backup=$1
-  if [[ -f "${backup}" ]]; then
-    install -m 0755 "${backup}" "${INSTALL_DIR}/proto-server"
-    install_systemd_service
-    systemctl restart proto-server.service || true
-    print_message "WARN" "A versão anterior foi restaurada."
-    return
+  if systemctl start proto-server.service; then
+    systemctl enable proto-server.service >/dev/null 2>&1 || true
+    print_message "SUCCESS" "Serviço proto-server.service iniciado."
+  else
+    print_message "WARN" "O serviço não iniciou. Execute 'proto' para configurar o token e tente novamente."
   fi
-
-  rm -f "${INSTALL_DIR}/proto-server"
 }
 
 main() {
@@ -388,33 +339,19 @@ main() {
   local candidate
   candidate=$(download_binary "${version}" "${arch}" "${download_dir}")
 
-  local backup="${download_dir}/proto-server.backup"
-  if [[ -f "${INSTALL_DIR}/proto-server" ]]; then
-    cp -p "${INSTALL_DIR}/proto-server" "${backup}"
-  fi
-
   configure_sysctl
   setup_config
-  if ! setup_token "${candidate}"; then
-    print_message "ERROR" "Não foi possível configurar o token do servidor."
-    rollback_binary "${backup}"
-    exit 1
-  fi
   install_pam_service
 
-  print_message "INFO" "Instalando e validando o serviço proto-server..."
-  if ! activate_binary "${candidate}"; then
-    print_message "ERROR" "O novo serviço não iniciou corretamente."
-    rollback_binary "${backup}"
-    exit 1
-  fi
+  print_message "INFO" "Instalando o serviço proto-server..."
+  install_binary "${candidate}"
 
   print_message "SUCCESS" "Binário proto-server instalado em ${INSTALL_DIR}/proto-server."
   download_menu_script
 
   echo ""
   print_message "SUCCESS" "DTunnel Protocolo Server v${version} instalado com sucesso!"
-  print_message "SUCCESS" "Para abrir o menu interativo, digite no terminal: ${COLORS[ERROR]}proto${COLORS[RESET]}"
+  print_message "INFO" "Execute ${COLORS[ERROR]}proto${COLORS[RESET]} para configurar o token e iniciar o serviço."
   echo ""
 }
 
