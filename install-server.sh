@@ -18,6 +18,7 @@ CONFIG_DIR="/etc/proto-server"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 STATS_FILE="${CONFIG_DIR}/stats.json"
 SERVICE_FILE="/etc/systemd/system/proto-server.service"
+PAM_SERVICE_FILE="/etc/pam.d/proto-server"
 LEGACY_SERVICES=("proto-server.service" "dtproto.service" "proxydt.service")
 
 print_message() {
@@ -60,25 +61,39 @@ check_root() {
 }
 
 ensure_dependencies() {
-  if command -v jq >/dev/null 2>&1; then
-    return 0
-  fi
-
-  print_message "INFO" "Instalando utilitário jq..."
+  print_message "INFO" "Instalando dependências do sistema e PAM..."
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq jq >/dev/null 2>&1 || true
-    return 0
+    apt-get update -qq
+    apt-get install -y -qq curl jq libpam0g libpam-modules >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl jq pam >/dev/null
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl jq pam >/dev/null
+  else
+    print_message "ERROR" "Distribuição não suportada. É necessário instalar jq e Linux-PAM."
+    exit 1
   fi
 
-  if command -v yum >/dev/null 2>&1; then
-    yum install -y -q jq >/dev/null 2>&1 || true
-    return 0
+  if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    print_message "ERROR" "Não foi possível instalar curl e jq."
+    exit 1
   fi
 
-  if command -v apk >/dev/null 2>&1; then
-    apk add --quiet jq >/dev/null 2>&1 || true
-    return 0
+  if ! ldconfig -p 2>/dev/null | grep 'libpam\.so\.0' >/dev/null; then
+    print_message "ERROR" "A biblioteca libpam.so.0 não está disponível."
+    exit 1
   fi
+
+  print_message "SUCCESS" "Dependências PAM instaladas."
+}
+
+ensure_glibc() {
+  if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+    return
+  fi
+
+  print_message "ERROR" "Esta versão requer uma distribuição glibc. Alpine/musl não é suportado."
+  exit 1
 }
 
 detect_arch() {
@@ -98,13 +113,13 @@ detect_arch() {
 
 fetch_latest_version() {
   local version
-  version=$(curl -sL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep -oP '"tag_name": "\K(.*)(?=")' | head -n 1 || true)
+  version=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' || true)
   if [[ -n "${version}" ]]; then
     echo "${version}"
     return
   fi
 
-  version=$(curl -sL "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep -oP '"tag_name": "\K(.*)(?=")' | head -n 1 || true)
+  version=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | jq -r '.[0].tag_name // empty' || true)
   if [[ -n "${version}" ]]; then
     echo "${version}"
     return
@@ -153,6 +168,11 @@ EOF
 setup_config() {
   mkdir -p "${CONFIG_DIR}"
   if [[ -f "${CONFIG_FILE}" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    jq '.server.auth = {"system": true}' "${CONFIG_FILE}" > "${tmp}"
+    mv "${tmp}" "${CONFIG_FILE}"
+    print_message "SUCCESS" "Configuração de autenticação migrada para PAM."
     return 0
   fi
 
@@ -190,11 +210,22 @@ EOF
   print_message "SUCCESS" "Configuração criada em ${CONFIG_FILE}."
 }
 
+install_pam_service() {
+  print_message "INFO" "Configurando serviço PAM em ${PAM_SERVICE_FILE}..."
+  mkdir -p "$(dirname "${PAM_SERVICE_FILE}")"
+  cat <<'EOF' > "${PAM_SERVICE_FILE}"
+auth required pam_unix.so nodelay
+account required pam_unix.so
+EOF
+  chmod 0644 "${PAM_SERVICE_FILE}"
+  print_message "SUCCESS" "Serviço PAM proto-server configurado."
+}
+
 install_systemd_service() {
   print_message "INFO" "Instalando serviço systemd em ${SERVICE_FILE}..."
   cat <<EOF > "${SERVICE_FILE}"
 [Unit]
-Description=Description=DTProto Server
+Description=DTProto Server
 After=network.target
 
 [Service]
@@ -216,30 +247,74 @@ EOF
 download_binary() {
   local version=$1
   local arch=$2
-  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/proto-server-${arch}"
+  local target_dir=$3
+  local artifact="proto-server-${arch}"
+  local binary="${target_dir}/${artifact}"
+  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${artifact}"
 
   print_message "INFO" "Baixando versão ${version} (${arch})..."
-  if ! curl -sL -o "/tmp/proto-server" "${download_url}"; then
+  if ! curl -fSL -o "${binary}" "${download_url}"; then
     print_message "ERROR" "Erro ao baixar o binário da versão ${version}."
     exit 1
   fi
 
-  chmod +x "/tmp/proto-server"
-  mv "/tmp/proto-server" "${INSTALL_DIR}/proto-server"
-  print_message "SUCCESS" "Binário proto-server instalado em ${INSTALL_DIR}/proto-server."
+  if ! curl -fSL -o "${binary}.sha256" "${download_url}.sha256"; then
+    print_message "ERROR" "Erro ao baixar o checksum da versão ${version}."
+    exit 1
+  fi
+
+  if ! (cd "${target_dir}" && sha256sum -c "${artifact}.sha256" >/dev/null); then
+    print_message "ERROR" "O checksum do binário baixado é inválido."
+    exit 1
+  fi
+
+  chmod 0755 "${binary}"
+  if ! ldd "${binary}" 2>/dev/null | grep 'libpam\.so\.0' >/dev/null; then
+    print_message "ERROR" "O binário baixado não possui suporte PAM válido para esta VPS."
+    exit 1
+  fi
+  if ! "${binary}" --version >/dev/null 2>&1; then
+    print_message "ERROR" "O binário PAM não é compatível com a biblioteca C desta VPS."
+    exit 1
+  fi
+
+  echo "${binary}"
 }
 
 download_menu_script() {
   local raw_url="https://raw.githubusercontent.com/${GITHUB_REPO}/main/proto-server.sh"
   print_message "INFO" "Instalando menu interativo 'proto'..."
-  if ! curl -sL -o "/tmp/proto" "${raw_url}" 2>/dev/null; then
-    print_message "ERROR" "Erro ao baixar o script de menu."
-    exit 1
+  if ! curl -fSL -o "/tmp/proto" "${raw_url}" 2>/dev/null; then
+    print_message "WARN" "Não foi possível atualizar o script de menu."
+    return
   fi
 
   chmod +x "/tmp/proto"
   mv "/tmp/proto" "${INSTALL_DIR}/proto"
   print_message "SUCCESS" "Menu de gerenciamento instalado em ${INSTALL_DIR}/proto."
+}
+
+activate_binary() {
+  local candidate=$1
+  cleanup_legacy_installations
+  install -m 0755 "${candidate}" "${INSTALL_DIR}/proto-server"
+  install_systemd_service
+  systemctl restart proto-server.service
+  sleep 2
+  systemctl is-active --quiet proto-server.service
+}
+
+rollback_binary() {
+  local backup=$1
+  if [[ -f "${backup}" ]]; then
+    install -m 0755 "${backup}" "${INSTALL_DIR}/proto-server"
+    install_systemd_service
+    systemctl restart proto-server.service || true
+    print_message "WARN" "A versão anterior foi restaurada."
+    return
+  fi
+
+  rm -f "${INSTALL_DIR}/proto-server"
 }
 
 main() {
@@ -251,7 +326,7 @@ main() {
 
   check_root
   ensure_dependencies
-  cleanup_legacy_installations
+  ensure_glibc
 
   local arch
   arch=$(detect_arch)
@@ -261,14 +336,31 @@ main() {
   version=$(fetch_latest_version)
   print_message "INFO" "Última versão detectada no GitHub: ${version}"
 
-  download_binary "${version}" "${arch}"
+  local download_dir
+  download_dir=$(mktemp -d)
+  trap "rm -rf '${download_dir}'" EXIT
+
+  local candidate
+  candidate=$(download_binary "${version}" "${arch}" "${download_dir}")
+
+  local backup="${download_dir}/proto-server.backup"
+  if [[ -f "${INSTALL_DIR}/proto-server" ]]; then
+    cp -p "${INSTALL_DIR}/proto-server" "${backup}"
+  fi
+
   configure_sysctl
   setup_config
-  install_systemd_service
-  download_menu_script
+  install_pam_service
 
-  print_message "INFO" "Iniciando serviço proto-server..."
-  systemctl restart proto-server.service || true
+  print_message "INFO" "Instalando e validando o serviço proto-server..."
+  if ! activate_binary "${candidate}"; then
+    print_message "ERROR" "O novo serviço não iniciou corretamente."
+    rollback_binary "${backup}"
+    exit 1
+  fi
+
+  print_message "SUCCESS" "Binário proto-server instalado em ${INSTALL_DIR}/proto-server."
+  download_menu_script
 
   echo ""
   print_message "SUCCESS" "DTProto Server v${version} instalado com sucesso!"
@@ -276,4 +368,6 @@ main() {
   echo ""
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
