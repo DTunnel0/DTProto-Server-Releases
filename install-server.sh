@@ -222,7 +222,7 @@ setup_token() {
 
   print_message "INFO" "Informe o token de acesso do servidor."
   while true; do
-    read -r -s -p "[>] Token: " token
+    read -r -p "[>] Token: " token
     echo ""
     if [[ -z "${token}" ]]; then
       print_message "ERROR" "O token não pode ser vazio."
@@ -269,7 +269,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=${INSTALL_DIR}/proto-server --config ${CONFIG_FILE}
-Restart=always
+Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
 
