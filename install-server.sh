@@ -225,7 +225,7 @@ install_systemd_service() {
   print_message "INFO" "Instalando serviço systemd em ${SERVICE_FILE}..."
   cat <<EOF > "${SERVICE_FILE}"
 [Unit]
-Description=DTProto Server
+Description=DTunnel Protocolo Server
 After=network.target
 
 [Service]
@@ -320,7 +320,7 @@ rollback_binary() {
 main() {
   clear
   echo -e "${COLORS[TITLE]}╔══════════════════════════════════════════════╗${COLORS[RESET]}"
-  echo -e "${COLORS[TITLE]}║${COLORS[SUCCESS]}      INSTALADOR DO DTPROTO SERVER & PROXY    ${COLORS[RESET]}${COLORS[TITLE]}║${COLORS[RESET]}"
+  echo -e "${COLORS[TITLE]}║${COLORS[SUCCESS]}      INSTALADOR DO DTUNNEL PROTOCOLO SERVER    ${COLORS[RESET]}${COLORS[TITLE]}║${COLORS[RESET]}"
   echo -e "${COLORS[TITLE]}╚══════════════════════════════════════════════╝${COLORS[RESET]}"
   echo ""
 
@@ -363,7 +363,7 @@ main() {
   download_menu_script
 
   echo ""
-  print_message "SUCCESS" "DTProto Server v${version} instalado com sucesso!"
+  print_message "SUCCESS" "DTunnel Protocolo Server v${version} instalado com sucesso!"
   print_message "SUCCESS" "Para abrir o menu interativo, digite no terminal: ${COLORS[ERROR]}proto${COLORS[RESET]}"
   echo ""
 }
