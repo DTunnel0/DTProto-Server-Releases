@@ -330,7 +330,8 @@ main() {
 
   local version
   version=$(fetch_latest_version)
-  print_message "INFO" "Última versão detectada no GitHub: ${version}"
+  local display_version="${version#v}"
+  print_message "INFO" "Última versão detectada no GitHub: ${display_version}"
 
   local download_dir
   download_dir=$(mktemp -d)
@@ -350,7 +351,7 @@ main() {
   download_menu_script
 
   echo ""
-  print_message "SUCCESS" "DTunnel Protocolo Server v${version} instalado com sucesso!"
+  print_message "SUCCESS" "DTunnel Protocolo Server v${display_version} instalado com sucesso!"
   print_message "INFO" "Para abrir o menu, execute: ${COLORS[ERROR]}proto${COLORS[RESET]}"
   echo ""
 }
