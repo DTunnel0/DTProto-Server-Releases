@@ -319,9 +319,15 @@ rollback_binary() {
 
 main() {
   clear
-  echo -e "${COLORS[TITLE]}╔══════════════════════════════════════════════╗${COLORS[RESET]}"
-  echo -e "${COLORS[TITLE]}║${COLORS[SUCCESS]}      INSTALADOR DO DTUNNEL PROTOCOLO SERVER    ${COLORS[RESET]}${COLORS[TITLE]}║${COLORS[RESET]}"
-  echo -e "${COLORS[TITLE]}╚══════════════════════════════════════════════╝${COLORS[RESET]}"
+  local title="INSTALADOR DO DTUNNEL PROTOCOLO SERVER"
+  local padding=4
+  local inner_width=$(( ${#title} + padding * 2 ))
+  local border
+  printf -v border '%*s' "${inner_width}" ''
+  border=${border// /═}
+  echo -e "${COLORS[TITLE]}╔${border}╗${COLORS[RESET]}"
+  echo -e "${COLORS[TITLE]}║${COLORS[SUCCESS]}$(printf '%*s' "${padding}" '')${title}$(printf '%*s' "${padding}" '')${COLORS[RESET]}${COLORS[TITLE]}║${COLORS[RESET]}"
+  echo -e "${COLORS[TITLE]}╚${border}╝${COLORS[RESET]}"
   echo ""
 
   check_root
